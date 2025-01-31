@@ -55,20 +55,3 @@ class controller(nn.Module):
         self.memory = self.memory + mx.outer(w, a) # write
 
         return
-
-
-idim = 10
-odim = 10
-hdim = 128
-numl_shared = 10
-numl_con = 10
-numl_out = 10
-memory_size = [64, 10]
-
-model = controller(idim, odim, hdim, numl_shared, numl_con, numl_out, memory_size)
-
-x = mx.random.normal([10])
-r = mx.random.normal([10])
-w = mx.random.normal([64])
-
-model(x, r, w)
