@@ -5,7 +5,7 @@ class controller(nn.Module):
     def __init__ (self, idim: int, odim: int, hdim: int, numl_shared: int, numl_con: int, numl_out: int, memory_size: list):
        super().__init__()
 
-       self.memory = mx.random.normal([memory_size[0], memory_size[1]])
+       self.memory = mx.ones([memory_size[0], memory_size[1]]) * 1e-6
 
        shared_layer_sizes = [idim + memory_size[1]] + [hdim] * numl_shared
        controller_layer_sizes = [hdim] * numl_con + [memory_size[0] * 3 + 3 * 2] # a, e, k (m size) + shift + 3 addressing params.
@@ -22,13 +22,19 @@ class controller(nn.Module):
             return input
 
         x = apply_layers(mx.concatenate([x, r]), self.shared_layers)
-        x_out = mx.sigmoid(apply_layers(x, self.out_layers))
+        x_out = apply_layers(x, self.out_layers)
         x_ctrl = apply_layers(x, self.controller_layers)
 
         i, j = self.memory.shape
         a, e, k = x_ctrl[0:j * 3].reshape([3, j])
         s = x_ctrl[j * 3:j * 3 + 3]
         b, g, y = x_ctrl[j * 3 + 3:j * 3 + 6].reshape([3])
+
+        # Ctrl parameter constraints
+        g = mx.sigmoid(g)
+        s = mx.softmax(s)
+        y = 1 + y**2
+
 
         w = self.adressing(k, b, g, s, y, wp)
         r = self.read(w)
@@ -37,8 +43,11 @@ class controller(nn.Module):
         return x_out, r, w
 
     def adressing(self, k, b, g, s, y, wp):
-        similarity = (k @ self.memory.transpose()) / (mx.linalg.norm(k) * mx.linalg.norm(self.memory, axis=1))
-        w = (b * (similarity)).exp() / (b * (similarity)).exp().sum() # Focusing by Content
+        memory_norms = mx.linalg.norm(self.memory, axis=1) + 1e-8  # Avoid division by zero
+        key_norm = mx.linalg.norm(k) + 1e-8
+        similarity = (k @ self.memory.transpose()) / (key_norm * memory_norms)
+        w = mx.softmax((b * similarity))
+
         w = g * w + ((1 - g) *  wp)  # Interpolation
         w = mx.convolve(w, s, mode='same') # Convolutional Shift
         w = mx.power(w, y) / mx.power(w, y).sum() # Sharpening
