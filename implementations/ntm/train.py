@@ -8,6 +8,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from tqdm import tqdm
+import argparse
 import random
 import csv
 import json
@@ -116,7 +117,7 @@ def train(iters, max_sequence_length, element_length, csv_file="run_log.csv"):
             mx.eval(model.parameters(), optimizer.state)
             pbar.set_postfix({"Loss": f"{loss.item():.6f}"})
 
-            if i % 500 == 0:
+            if i % 1000 == 0:
                 # Compute accuracy along with predictions and targets for visualization.
                 acc_value = copy_task_eval_fn(input, target, copy_len)
                 # Compute additional statistics using the helper functions.
@@ -141,3 +142,14 @@ def train(iters, max_sequence_length, element_length, csv_file="run_log.csv"):
 
                 writer.writerow(log_data)
                 csvfile.flush()
+
+train(150000, 10, 5, csv_file="run_log/final_2.csv")
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--iters', type=int, default=150000)
+    parser.add_argument('--max_seq_len', type=int, default=10)
+    parser.add_argument('--element_length', type=int, default=5)
+    parser.add_argument('--csv_file', type=str, default="run_log/final_2.csv")
+    args = parser.parse_args()
+    train(args.iters, args.max_seq_len, args.element_length, csv_file=args.csv_file)
