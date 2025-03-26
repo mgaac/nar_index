@@ -143,11 +143,9 @@ def train(iters, max_sequence_length, element_length, csv_file="run_log.csv"):
                 writer.writerow(log_data)
                 csvfile.flush()
 
-train(150000, 10, 5, csv_file="run_log/final_2.csv")
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--iters', type=int, default=150000)
+    parser.add_argument('--iters', type=int)
     parser.add_argument('--max_seq_len', type=int, default=10)
     parser.add_argument('--element_length', type=int, default=5)
     parser.add_argument('--csv_file', type=str, default="run_log/final_2.csv")
