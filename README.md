@@ -1,4 +1,4 @@
-# *nar_index*
+# *Neural Algorithmic Reasoning Index*
 
 A proto-index, perhaps, abiding by today's zeitgeist, a sort of worklog. A response to a now somewhat repulsive feeling towards
 anything having to do with LLMs. Implemented in MLX and at times accompanied by commentary, the techniques/methods/papers implemented
