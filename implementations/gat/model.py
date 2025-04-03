@@ -1,5 +1,8 @@
+import mlx.core as mx
+import mlx.nn as nn
+
 class gat_layer(nn.Module):
-    def __init__(self, num_nodes: int, dim_proj: int, num_att_heads: int): 
+    def __init__(self, num_nodes: int, dim_proj: int, num_att_heads: int, dropout_prob: float): 
         super().__init__()
 
         self.source_dim = 0;
@@ -13,6 +16,8 @@ class gat_layer(nn.Module):
         self.target_scores_fn = mx.array([1, num_att_heads, dim_proj]) 
 
         self.leakyReLU = nn.LeakyReLU(0.02)
+        self.dropout = nn.Dropout(dropout_prob)
+        
 
     def __call__(self, node_proj, adjacency_matrix):
 
@@ -35,6 +40,7 @@ class gat_layer(nn.Module):
         softmax_denominator = softmax_denominator.at[target_idx].add(edge_scores)
 
         attention_scores = edge_scores / (softmax_denominator + 1e-16)
+        attention_scores = self.dropout(attention_scores)
 
         edge_filtered_node_proj = edge_filtered_node_proj * attention_scores;
 
@@ -43,3 +49,39 @@ class gat_layer(nn.Module):
         new_node_proj = new_node_proj.reshape((self.num_nodes, self.num_att_heads * self.dim_proj))
 
         return new_node_proj
+
+
+class gat(nn.Module):
+    def __init__(self, num_nodes: int, dim_embed: int, dim_proj: int, num_att_heads: int, num_layers: int, skip_connections: bool, dropout_prob: float,           
+                num_out_layers: int, num_out_classes: int): 
+        super().__init__()
+        
+        total_att_size = dim_proj * num_att_heads;
+
+        GATlayer = gat_layer(num_nodes, dim_proj, num_att_heads, dropout_prob)
+
+        self.embed_proj = nn.Linear(dim_embed, total_att_size)
+        self.gat_layers = nn.Sequential([GATlayer] * num_layers)
+        self.out_layers = nn.Sequential([nn.Linear(total_att_size, total_att_size)] * num_out_layers + 
+                                        [nn.Linear(total_att_size, num_out_classes)])
+
+        self.leakyReLU = nn.LeakyReLU(.02)
+        self.dropout = nn.Dropout(dropout_prob)
+        self.skip_connections = skip_connections
+
+    def __call__(self, node_embeddings, adjacency_matrix):
+        assert node_embeddings.shape[1] == self.dim_embed, f'Incorrect node embedding size'
+
+        node_proj = self.embed_proj(node_embeddings);
+        node_proj = self.dropout(node_proj)
+
+        for layer in self.gat_layers:
+            new_node_proj = layer(node_proj, adjacency_matrix)
+            if (self.skip_connections):
+                new_node_proj += node_proj;
+            node_proj = new_node_proj
+
+        for layer in self.out_layers:
+            node_embeddings = mx.layer(node_embeddings)
+
+        return mx.softmax(node_embeddings)
