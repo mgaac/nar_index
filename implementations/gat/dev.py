@@ -4,13 +4,11 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 from mlx.utils import tree_map
 from functools import partial
-from tqdm import tqdm
-import numpy as np
-import argparse
-import random
-import csv
-import json
 
+import torch
+from torch_geometric.datasets import CoraFull
+
+import os
 
 class gat_layer(nn.Module):
     def __init__(self, num_nodes: int, dim_proj: int, num_att_heads: int, dropout_prob: float):
@@ -137,3 +135,10 @@ model_config = {
 }
 
 gat_model = gat(**model_config)
+
+
+
+script_dir = os.getcwd()
+data_dir = os.path.join(script_dir, 'data')
+
+dataset = CoraFull(root=data_dir)
