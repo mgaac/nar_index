@@ -113,6 +113,11 @@ model_config = {
     'num_out_classes': 7
 }
 
+hyper_params = {
+    'learning_rate': 3e-10,
+    'num_epochs': 100
+}
+
 gat_model = gat(**model_config)
 
 node_embeddings = mx.ones([100, 128])
@@ -124,24 +129,7 @@ out = gat_model(data)
 
 def loss_fn(model, data, ground_truth):
     logits = model(data)
-    return nn.losses.cross_entropy(logits, ground_truth, axis=0)
-
-a = mx.arange(0, 100).reshape(-1, 1)                  # shape: (4, 1)
-b = mx.random.randint(0, 6, [100, 1])                 # shape: (4, 1)
-
-index = mx.concatenate([b, a], axis=-1)
-
-one_hot = mx.zeros([100, 7]).at[index].add(1)
-
-
-x = mx.zeros(5,3)
-
-x.at[0].add(1)
-
-loss = loss_fn(gat_model, data, mx.random.normal(0, 7, [100, 7]))
-
-
-
+    return nn.losses.cross_entropy(logits, ground_truth, axis=1)
 
 def eval_fn(model, data, ground_truth):
     logits = model(data)
@@ -151,4 +139,11 @@ loss_and_grad_fn = nn.value_and_grad(gat_model, loss_fn)
 
 loss, grad = loss_and_grad_fn(gat_model, data, mx.random.randint(0, 7, [100, 1]))
 
-num_epochs = 100
+optimizer = optim.Adam(learning_rate=hyper_params['learning_rate'])
+
+num_epochs = hyper_params['num_epochs']
+
+for i in range(num_epochs):
+    loss, grad = loss_and_grad_fn(gat_model, data, mx.random.randint(0, 7, [100, 1]))
+    optimizer.update(gat_model, grad)
+    mx.eval(gat_model.parameters(), optimizer.state)
