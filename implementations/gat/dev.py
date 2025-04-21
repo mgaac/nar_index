@@ -5,6 +5,10 @@ import mlx.optimizers as optim
 from mlx.utils import tree_map
 from functools import partial
 
+import numpy as np
+import pickle
+import os
+
 class gat_layer(nn.Module):
     def __init__(self, num_nodes: int, dim_proj: int, num_att_heads: int, dropout_prob: float):
         super().__init__()
@@ -120,12 +124,35 @@ hyper_params = {
 
 gat_model = gat(**model_config)
 
-node_embeddings = mx.ones([100, 128])
-adjacency_matrix = mx.random.randint(0, 100, [2, 100])
 
-data = (node_embeddings, adjacency_matrix)
+def pickle_read(path):
+    with open(path, 'rb') as f:
+        return pickle.load(f, encoding='latin1')
 
-out = gat_model(data)
+data_dir = 'data'
+
+allx  = pickle_read(os.path.join(data_dir, 'allx'))
+ally  = pickle_read(os.path.join(data_dir, 'ally'))
+tx    = pickle_read(os.path.join(data_dir, 'tx'))
+ty    = pickle_read(os.path.join(data_dir, 'ty'))
+
+graph = pickle_read(os.path.join(data_dir, 'graph'))
+
+test_idx = np.loadtxt(os.path.join(data_dir, 'test_index'), dtype=int)
+
+allx = mx.array(allx.todense())
+tx = mx.array(tx.todense())
+test_idx = mx.array(test_idx)
+
+node_embeddings = mx.concatenate([allx, tx], axis=0)
+
+def generate_connection_matrix(graph):
+    edges = [(src, trg) for src, trgs in graph.items() for trg in trgs]
+    src_idx, trg_idx = zip(*edges)
+    return mx.array([src_idx, trg_idx])
+
+connection_matrix = generate_connection_matrix(graph)
+
 
 def loss_fn(model, data, ground_truth):
     logits = model(data)
@@ -137,13 +164,4 @@ def eval_fn(model, data, ground_truth):
 
 loss_and_grad_fn = nn.value_and_grad(gat_model, loss_fn)
 
-loss, grad = loss_and_grad_fn(gat_model, data, mx.random.randint(0, 7, [100, 1]))
-
 optimizer = optim.Adam(learning_rate=hyper_params['learning_rate'])
-
-num_epochs = hyper_params['num_epochs']
-
-for i in range(num_epochs):
-    loss, grad = loss_and_grad_fn(gat_model, data, mx.random.randint(0, 7, [100, 1]))
-    optimizer.update(gat_model, grad)
-    mx.eval(gat_model.parameters(), optimizer.state)
