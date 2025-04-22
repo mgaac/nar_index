@@ -173,7 +173,7 @@ optimizer = optim.Adam(learning_rate=hyper_params['learning_rate'])
 for i in range(100000):
     loss, grads = loss_and_grad_fn(gat_model, data, ground_truth)
     optimizer.update(gat_model, grads)
-    mx.eval(gat_model.parameters(), optimizer.state)
+    mx.eval(gat_model.state, optimizer.state)
 
     if (i % 100 == 0):
         print(f'Epoch {i}: Loss {loss:.4f}, Accuracy {eval_fn(gat_model, data, ground_truth):.4f}')
