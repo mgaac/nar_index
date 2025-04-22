@@ -1,67 +1,105 @@
+import argparse
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 
 from model import gat
 from data_loading import load_data
-
-from functools import partial
 from tqdm import tqdm
 
-def loss_fn(model, data, ground_truth):
+
+def loss_fn(model, data, labels, mask):
     logits = model(data)
-    return mx.mean(nn.losses.cross_entropy(logits, ground_truth, axis=1))
+    loss = nn.losses.cross_entropy(logits, labels, axis=1) * mask
+    n_samples = mask.sum().sum()
+    return loss.sum() / n_samples
 
-def eval_fn(model, data, ground_truth):
+
+def eval_fn(model, data, labels):
     logits = model(data)
-    return mx.mean(mx.argmax(logits, axis=-1) == mx.argmax(ground_truth, axis=-1))
-
-model_config = {
-    'num_nodes': 2708,
-    'dim_embed': 1433,
-    'dim_proj': 8,
-    'num_att_heads': 8,
-    'num_layers': 2,
-    'skip_connections': True,
-    'dropout_prob': 0.5,
-    'num_out_layers': 1,
-    'num_out_classes': 7
-}
-
-hyper_params = {
-    'learning_rate': 3e-3,
-    'num_steps': 100
-}
-
-model = gat(**model_config)
-
-optimizer = optim.Adam(learning_rate=hyper_params['learning_rate'])
-loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-
-@partial(mx.compile, inputs=model.state, outputs=[model.state, optimizer.state])
-def step(data, labels):
-    loss, grads = loss_and_grad_fn(model, data, labels)
-    optimizer.update(model, grads)
-
-    return loss
-
-dataset = load_data('data/CORA')
-
-node_embeddings, connection_matrix, ground_truth, train_mask, test_mask = dataset
-data = node_embeddings, connection_matrix
-
-train_labels = ground_truth * train_mask
-test_labels = ground_truth * test_mask
+    logits = mx.softmax(logits, axis=-1)
+    return mx.mean(mx.argmax(logits, axis=-1) == mx.argmax(labels, axis=-1))
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train a GAT model on the CORA dataset"
+    )
+    parser.add_argument(
+        "--data", type=str, default="data/CORA",
+        help="Path to the dataset folder"
+    )
+    parser.add_argument(
+        "--learning-rate", type=float, default=3e-3,
+        help="Learning rate for the optimizer"
+    )
+    parser.add_argument(
+        "--num-steps", type=int, default=5000,
+        help="Total number of training steps"
+    )
+    parser.add_argument(
+        "--eval-interval", type=int, default=200,
+        help="Steps between model evaluations"
+    )
+    parser.add_argument(
+        "--log-interval", type=int, default=50,
+        help="Steps between tqdm status updates"
+    )
+    return parser.parse_args()
 
-pbar = tqdm(range(hyper_params['num_steps']), desc="Training", unit="iters")
-for i in pbar:
-    loss = step(data, train_labels)
-    mx.eval(model.state, optimizer.state)
 
-    eval = 0.0
-    if i % 100 == 0:
-        eval = eval_fn(model, data, test_labels)
+def main():
+    args = parse_args()
 
-    pbar.set_postfix(loss=f"{loss:.4f}", eval=f"{eval:.4f}")
+    # Model configuration (fixed)
+    model_config = {
+        'num_nodes': 2708,
+        'dim_embed': 1433,
+        'dim_proj': 8,
+        'num_att_heads': 8,
+        'num_layers': 2,
+        'skip_connections': False,
+        'dropout_prob': 0.6,
+        'num_out_layers': 3,
+        'num_out_classes': 7
+    }
+
+    # Hyperparameters from CLI
+    hyper_params = {
+        'learning_rate': args.learning_rate,
+        'num_steps': args.num_steps
+    }
+
+    # Initialize model and optimizer
+    model = gat(**model_config)
+    mx.eval(model.parameters())
+    optimizer = optim.Adam(learning_rate=hyper_params['learning_rate'])
+
+    # Prepare loss/gradient function
+    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+
+    # Load data
+    node_embeddings, connection_matrix, labels, train_mask, test_mask = load_data(args.data)
+    data = (node_embeddings, connection_matrix)
+
+    # Training loop
+    pbar = tqdm(range(hyper_params['num_steps']), desc="Training", unit="iters")
+    for i in pbar:
+        loss, grads = loss_and_grad_fn(model, data, labels, train_mask)
+        optimizer.update(model, grads)
+
+        # Periodic evaluation
+        if i % args.eval_interval == 0:
+            test_loss = loss_fn(model, data, labels, test_mask)
+            accuracy = eval_fn(model, data, labels)
+
+        # Update tqdm status
+        if i % args.log_interval == 0:
+            pbar.set_postfix(
+                train_loss=f"{loss:.4f}",
+                test_loss=f"{test_loss:.4f}",
+                accuracy=f"{accuracy:.4f}"
+            )
+
+if __name__ == "__main__":
+    main()

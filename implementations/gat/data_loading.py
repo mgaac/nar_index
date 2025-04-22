@@ -33,10 +33,11 @@ def load_data(data_dir: str = 'data/CORA'):
     test_idx = mx.array(test_idx)
 
     node_embeddings = mx.concatenate([allx, tx], axis=0)
-    ground_truth = mx.concat([ally, ty], axis=0)
+    labels = mx.concat([ally, ty], axis=0)
     connection_matrix = generate_connection_matrix(graph)
 
-    train_mask = mx.ones([*ground_truth.shape]).at[test_idx].add(-1)
-    test_mask = mx.zeros([*ground_truth.shape]).at[test_idx].add(1)
 
-    return node_embeddings, connection_matrix, ground_truth, train_mask, test_mask
+    train_mask = mx.ones([labels.shape[0]]).at[test_idx].add(-1)
+    test_mask = mx.zeros([labels.shape[0]]).at[test_idx].add(1)
+
+    return node_embeddings, connection_matrix, labels, train_mask, test_mask
