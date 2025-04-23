@@ -7,19 +7,16 @@ from model import gat
 from data_loading import load_data
 from tqdm import tqdm
 
-
 def loss_fn(model, data, labels, mask):
     logits = model(data)
     loss = nn.losses.cross_entropy(logits, labels, axis=1) * mask
     n_samples = mask.sum().sum()
     return loss.sum() / n_samples
 
-
 def eval_fn(model, data, labels):
     logits = model(data)
     logits = mx.softmax(logits, axis=-1)
     return mx.mean(mx.argmax(logits, axis=-1) == mx.argmax(labels, axis=-1))
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -46,7 +43,6 @@ def parse_args():
         help="Steps between tqdm status updates"
     )
     return parser.parse_args()
-
 
 def main():
     args = parse_args()

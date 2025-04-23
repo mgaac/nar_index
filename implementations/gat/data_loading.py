@@ -8,7 +8,6 @@ def pickle_read(path):
     with open(path, 'rb') as f:
         return pickle.load(f, encoding='latin1')
 
-
 def generate_connection_matrix(graph):
     edges = [(src, trg) for src, trgs in graph.items() for trg in trgs]
     src_idx, trg_idx = zip(*edges)

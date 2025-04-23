@@ -67,6 +67,10 @@ class gat(nn.Module):
 
         total_att_size = dim_proj * num_att_heads;
 
+        self.num_nodes = num_nodes
+        self.num_att_heads = num_att_heads
+        self.dim_proj = dim_proj
+
         self.dim_embed = dim_embed
 
         self.embed_proj = nn.Linear(dim_embed, total_att_size)
@@ -77,9 +81,9 @@ class gat(nn.Module):
         ]
 
         self.out_layers = [
-          nn.Linear(total_att_size, total_att_size)
+          nn.Linear(dim_proj, dim_proj)
           for _ in range(num_out_layers)
-        ] + [nn.Linear(total_att_size, num_out_classes)]
+        ] + [nn.Linear(dim_proj, num_out_classes)]
 
         self.leakyReLU = nn.LeakyReLU(.02)
         self.dropout = nn.Dropout(dropout_prob)
@@ -98,6 +102,11 @@ class gat(nn.Module):
             if (self.skip_connections):
                 new_node_proj += node_proj;
             node_proj = new_node_proj
+
+        node_proj = node_proj.reshape(node_proj.shape[0], self.num_att_heads, self.dim_proj)
+        node_proj = mx.mean(node_proj, axis=1)
+
+        print(node_proj.shape)
 
         for layer in self.out_layers:
             node_proj = layer(node_proj)
@@ -130,7 +139,7 @@ def pickle_read(path):
     with open(path, 'rb') as f:
         return pickle.load(f, encoding='latin1')
 
-data_dir = 'data'
+data_dir = 'data/CORA'
 
 allx  = pickle_read(os.path.join(data_dir, 'allx'))
 ally  = pickle_read(os.path.join(data_dir, 'ally'))
