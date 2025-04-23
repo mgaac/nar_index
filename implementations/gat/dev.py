@@ -59,7 +59,6 @@ class gat_layer(nn.Module):
 
         return new_node_proj.reshape((self.num_nodes, self.num_att_heads * self.dim_proj))
 
-
 class gat(nn.Module):
     def __init__(self, num_nodes: int, dim_embed: int, dim_proj: int, num_att_heads: int, num_layers: int, skip_connections: bool, dropout_prob: float,
                 num_out_layers: int, num_out_classes: int):
@@ -158,6 +157,10 @@ test_idx = mx.array(test_idx)
 
 node_embeddings = mx.concatenate([allx, tx], axis=0)
 
+for i in range(1433):
+    print(node_embeddings[2000][i])
+
+node_embeddings[2000].shape
 ground_truth = mx.concat([ally, ty], axis=0)
 
 def generate_connection_matrix(graph):

@@ -1,14 +1,6 @@
 import mlx.core as mx
 import mlx.nn as nn
 
-import mlx.optimizers as optim
-from mlx.utils import tree_map
-from functools import partial
-
-import numpy as np
-import pickle
-import os
-
 class gat_layer(nn.Module):
     def __init__(self, num_nodes: int, dim_proj: int, num_att_heads: int, dropout_prob: float):
         super().__init__()
@@ -59,7 +51,6 @@ class gat_layer(nn.Module):
 
         return new_node_proj.reshape((self.num_nodes, self.num_att_heads * self.dim_proj))
 
-
 class gat(nn.Module):
     def __init__(self, num_nodes: int, dim_embed: int, dim_proj: int, num_att_heads: int, num_layers: int, skip_connections: bool, dropout_prob: float,
                 num_out_layers: int, num_out_classes: int):
@@ -67,19 +58,23 @@ class gat(nn.Module):
 
         total_att_size = dim_proj * num_att_heads;
 
+        self.num_nodes = num_nodes
+        self.num_att_heads = num_att_heads
+        self.dim_proj = dim_proj
+
         self.dim_embed = dim_embed
 
         self.embed_proj = nn.Linear(dim_embed, total_att_size)
 
         self.gat_layers = [
-            gat_layer(num_nodes, dim_proj, num_att_heads, dropout_prob)
-            for _ in range(num_layers)
+          gat_layer(num_nodes, dim_proj, num_att_heads, dropout_prob)
+          for _ in range(num_layers)
         ]
 
         self.out_layers = [
-            nn.Linear(total_att_size, total_att_size)
-            for _ in range(num_out_layers)
-        ] + [nn.Linear(total_att_size, num_out_classes)]
+          nn.Linear(dim_proj, dim_proj)
+          for _ in range(num_out_layers)
+        ] + [nn.Linear(dim_proj, num_out_classes)]
 
         self.leakyReLU = nn.LeakyReLU(.02)
         self.dropout = nn.Dropout(dropout_prob)
@@ -90,7 +85,10 @@ class gat(nn.Module):
 
         assert node_embeddings.shape[1] == self.dim_embed, f'Incorrect node embedding size'
 
-        node_proj = self.embed_proj(node_embeddings);
+        node_embeddings = self.dropout(node_embeddings)
+
+        node_proj = self.embed_proj(node_embeddings)
+
         node_proj = self.dropout(node_proj)
 
         for layer in self.gat_layers:
@@ -98,6 +96,9 @@ class gat(nn.Module):
             if (self.skip_connections):
                 new_node_proj += node_proj;
             node_proj = new_node_proj
+
+        node_proj = node_proj.reshape(node_proj.shape[0], self.num_att_heads, self.dim_proj)
+        node_proj = mx.mean(node_proj, axis=1)
 
         for layer in self.out_layers:
             node_proj = layer(node_proj)
