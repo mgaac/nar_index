@@ -93,7 +93,10 @@ class gat(nn.Module):
 
         assert node_embeddings.shape[1] == self.dim_embed, f'Incorrect node embedding size'
 
-        node_proj = self.embed_proj(node_embeddings);
+        node_embeddings = self.dropout(node_embeddings)
+
+        node_proj = self.embed_proj(node_embeddings)
+
         node_proj = self.dropout(node_proj)
 
         for layer in self.gat_layers:
@@ -105,15 +108,11 @@ class gat(nn.Module):
         node_proj = node_proj.reshape(node_proj.shape[0], self.num_att_heads, self.dim_proj)
         node_proj = mx.mean(node_proj, axis=1)
 
-        print(node_proj.shape)
-
         for layer in self.out_layers:
             node_proj = layer(node_proj)
 
         return node_proj
 
-
-# example config and model instantiation
 model_config = {
     'num_nodes': 2708,
     'dim_embed': 1433,

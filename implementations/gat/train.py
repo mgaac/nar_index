@@ -8,12 +8,14 @@ from data_loading import load_data
 from tqdm import tqdm
 
 def loss_fn(model, data, labels, mask):
+    model = model.train()
     logits = model(data)
     loss = nn.losses.cross_entropy(logits, labels, axis=1) * mask
     n_samples = mask.sum().sum()
     return loss.sum() / n_samples
 
 def eval_fn(model, data, labels):
+    model = model.eval()
     logits = model(data)
     logits = mx.softmax(logits, axis=-1)
     return mx.mean(mx.argmax(logits, axis=-1) == mx.argmax(labels, axis=-1))
@@ -31,16 +33,8 @@ def parse_args():
         help="Learning rate for the optimizer"
     )
     parser.add_argument(
-        "--num-steps", type=int, default=5000,
+        "--num-steps", type=int, default=10000,
         help="Total number of training steps"
-    )
-    parser.add_argument(
-        "--eval-interval", type=int, default=200,
-        help="Steps between model evaluations"
-    )
-    parser.add_argument(
-        "--log-interval", type=int, default=50,
-        help="Steps between tqdm status updates"
     )
     return parser.parse_args()
 
@@ -53,10 +47,10 @@ def main():
         'dim_embed': 1433,
         'dim_proj': 8,
         'num_att_heads': 8,
-        'num_layers': 2,
-        'skip_connections': False,
-        'dropout_prob': 0.6,
-        'num_out_layers': 3,
+        'num_layers': 1,
+        'skip_connections': True,
+        'dropout_prob': 0.7,
+        'num_out_layers': 1,
         'num_out_classes': 7
     }
 
@@ -85,12 +79,12 @@ def main():
         optimizer.update(model, grads)
 
         # Periodic evaluation
-        if i % args.eval_interval == 0:
+        if i % 50 == 0:
             test_loss = loss_fn(model, data, labels, test_mask)
             accuracy = eval_fn(model, data, labels)
 
         # Update tqdm status
-        if i % args.log_interval == 0:
+        if i % 50 == 0:
             pbar.set_postfix(
                 train_loss=f"{loss:.4f}",
                 test_loss=f"{test_loss:.4f}",
