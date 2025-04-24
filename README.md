@@ -5,3 +5,12 @@ anything having to do with LLMs. Implemented in MLX and at times accompanied by 
 were curated by myself and, as such, suffer from the noble curse of at times seeming too scattered. An attempt was made to nonetheless
 keep them focused around the area of Neural Algorithmic Reasoning and, in the spririt of Francois Chollet, deep learning guided program
 synthesis.
+
+**Implemented**
+- Neural Turing Machines - *Unsuccessful*
+- Graph Attention Networks - 83% accuracy in CORA
+
+**Backlog**
+- Message Passing Graph Neural Networks
+- Neural Execution of Graph Algorithms
+- A Generalist Neural Algorithmic Learner
