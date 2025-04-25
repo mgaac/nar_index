@@ -1,16 +1,7 @@
 import mlx.core as mx
-import
-mlx.nn as nn
-
-import mlx.optimizers as optim
-from mlx.utils import tree_map
-from functools import partial
+import mlx.nn as nn
 
 from enum import Enum
-
-import numpy as np
-import pickle
-import os
 
 class aggregation_fn(Enum):
     SUM = 1
@@ -113,76 +104,3 @@ class mpnn(nn.Module):
             node_embeddings = out_layer(node_embeddings)
 
         return node_embeddings
-
-model_config = {
-    'num_nodes': 2708,
-    'dim_proj': 1433,
-    'dropout_prob': 0.5,
-    'skip_connections': True,
-    'aggregation_fn': aggregation_fn.AVG,
-    'num_mp_layers': 2,
-    'num_out_layers': 1,
-    'num_classes': 7
-}
-
-hyper_params = {
-    'learning_rate': 3e-3,
-    'num_epochs': 100
-}
-
-model = mpnn(**model_config)
-mx.eval(model.parameters())
-
-
-def pickle_read(path):
-    with open(path, 'rb') as f:
-        return pickle.load(f, encoding='latin1')
-
-data_dir = '../gat/data/CORA'
-
-allx  = pickle_read(os.path.join(data_dir, 'allx'))
-ally  = pickle_read(os.path.join(data_dir, 'ally'))
-tx    = pickle_read(os.path.join(data_dir, 'tx'))
-ty    = pickle_read(os.path.join(data_dir, 'ty'))
-
-graph = pickle_read(os.path.join(data_dir, 'graph'))
-
-test_idx = np.loadtxt(os.path.join(data_dir, 'test_index'), dtype=int)
-
-allx = mx.array(allx.todense())
-ally = mx.array(ally)
-tx = mx.array(tx.todense())
-ty = mx.array(ty)
-test_idx = mx.array(test_idx)
-
-node_embeddings = mx.concatenate([allx, tx], axis=0)
-
-node_embeddings[2000].shape
-ground_truth = mx.concat([ally, ty], axis=0)
-
-def generate_connection_matrix(graph):
-    edges = [(src, trg) for src, trgs in graph.items() for trg in trgs]
-    src_idx, trg_idx = zip(*edges)
-    return mx.array([src_idx, trg_idx], dtype=mx.int32)
-
-connection_matrix = generate_connection_matrix(graph)
-data = node_embeddings, connection_matrix
-
-def loss_fn(model, data, ground_truth):
-    logits = model(data)
-    return mx.mean(nn.losses.cross_entropy(logits, ground_truth, axis=1))
-
-def eval_fn(model, data, ground_truth):
-    logits = model(data)
-    return mx.mean(mx.argmax(logits, axis=-1) == mx.argmax(ground_truth, axis=-1))
-
-loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-optimizer = optim.Adam(learning_rate=hyper_params['learning_rate'])
-
-for i in range(100000):
-    loss, grads = loss_and_grad_fn(model, data, ground_truth)
-    optimizer.update(model, grads)
-    mx.eval(model.state, optimizer.state)
-
-    if (i % 100 == 0):
-        print(f'Epoch {i}: Loss {loss:.4f}, Accuracy {eval_fn(model, data, ground_truth):.4f}')
