@@ -83,7 +83,7 @@ class gat(nn.Module):
     def __call__(self, data):
         node_embeddings, adjacency_matrix = data
 
-        assert node_embeddings.shape[1] == self.dim_embed, f'Incorrect node embedding size'
+        assert node_embeddings.shape[1] == self.dim_embed, f'Incorrect node embedding size. Expected {self.dim_embed}, got {node_embeddings.shape[1]}'
 
         node_embeddings = self.dropout(node_embeddings)
 

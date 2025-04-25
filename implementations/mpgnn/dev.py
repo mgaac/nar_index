@@ -40,6 +40,9 @@ class mp_layer(nn.Module):
 
     def __call__(self, connection_matrix, node_embeddings):
 
+        connection_matrix = self.dropout(connection_matrix)
+        node_embeddings = self.dropout(node_embeddings)
+
         source_idx = connection_matrix[self.source_idx]
         target_idx = connection_matrix[self.target_idx]
 
@@ -95,9 +98,11 @@ class mpnn(nn.Module):
         self.out_layer = [
             nn.Linear(dim_proj, dim_proj)
             for _ in range(num_out_layers)
-        ] + nn.Linear(dim_proj, num_classes)
+        ] + [nn.Linear(dim_proj, num_classes)]
 
     def __call__(self, connection_matrix, node_embeddings):
+        assert node_embeddings.shape[1] == self.dim_proj, f'Incorrect node embedding size. Expected {self.dim_proj}, got {node_embeddings.shape[1]}'
+
         for mp_layer in self.mp_layer:
             node_embeddings = mp_layer(connection_matrix, node_embeddings)
 
@@ -105,3 +110,60 @@ class mpnn(nn.Module):
             node_embeddings = out_layer(node_embeddings)
 
         return node_embeddings
+
+model_config = {
+    'num_nodes': 2708,
+    'dim_proj': 1433,
+    'dropout_prob': 0.5,
+    'skip_connections': True,
+    'aggregation_fn': aggregation_fn.AVG,
+    'num_mp_layers': 2,
+    'num_out_layers': 1,
+    'num_classes': 7
+}
+
+hyper_params = {
+    'learning_rate': 3e-3,
+    'num_epochs': 100
+}
+
+model = mpnn(**model_config)
+mx.eval(model.parameters())
+
+
+def pickle_read(path):
+    with open(path, 'rb') as f:
+        return pickle.load(f, encoding='latin1')
+
+data_dir = '../gat/data/CORA'
+
+allx  = pickle_read(os.path.join(data_dir, 'allx'))
+ally  = pickle_read(os.path.join(data_dir, 'ally'))
+tx    = pickle_read(os.path.join(data_dir, 'tx'))
+ty    = pickle_read(os.path.join(data_dir, 'ty'))
+
+graph = pickle_read(os.path.join(data_dir, 'graph'))
+
+test_idx = np.loadtxt(os.path.join(data_dir, 'test_index'), dtype=int)
+
+allx = mx.array(allx.todense())
+ally = mx.array(ally)
+tx = mx.array(tx.todense())
+ty = mx.array(ty)
+test_idx = mx.array(test_idx)
+
+node_embeddings = mx.concatenate([allx, tx], axis=0)
+
+node_embeddings[2000].shape
+ground_truth = mx.concat([ally, ty], axis=0)
+
+def generate_connection_matrix(graph):
+    edges = [(src, trg) for src, trgs in graph.items() for trg in trgs]
+    src_idx, trg_idx = zip(*edges)
+    return mx.array([src_idx, trg_idx])
+
+connection_matrix = generate_connection_matrix(graph)
+data = node_embeddings, connection_matrix
+
+node_embeddings.shape[1]
+model(node_embeddings, connection_matrix)
