@@ -1,6 +1,5 @@
 import mlx.core as mx
-import
-mlx.nn as nn
+import mlx.nn as nn
 
 import mlx.optimizers as optim
 from mlx.utils import tree_map
@@ -19,7 +18,7 @@ class aggregation_fn(Enum):
     MIN = 4
 
 class mp_layer(nn.Module):
-    def __init__(self, num_nodes: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum):
+    def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum):
         super().__init__()
 
         self.source_idx = 0
@@ -29,12 +28,12 @@ class mp_layer(nn.Module):
         self.num_nodes = num_nodes
         self.dropout_prob = dropout_prob
         self.skip_connections = skip_connections
-        self.aggregation_function_fn = aggregation_fn
+        self.aggregation_fn = aggregation_fn
 
-        self.source_message_fn = mx.random.normal([1, num_nodes, dim_proj])
-        self.target_message_fn = mx.random.normal([1, num_nodes, dim_proj])
+        self.source_message_fn = mx.random.normal([1, embedding_dim, dim_proj])
+        self.target_message_fn = mx.random.normal([1, embedding_dim, dim_proj])
 
-        self.update_fn = nn.Linear(dim_proj, dim_proj)
+        self.update_fn = nn.Linear(dim_proj, embedding_dim)
 
         self.dropout = nn.Dropout(dropout_prob)
         self.relu = nn.ReLU()
@@ -44,31 +43,38 @@ class mp_layer(nn.Module):
         connection_matrix = self.dropout(connection_matrix)
         node_embeddings = self.dropout(node_embeddings)
 
-        source_idx = connection_matrix[self.source_idx]
-        target_idx = connection_matrix[self.target_idx]
+        source_idx = connection_matrix[self.source_idx].astype(mx.int32)
+        target_idx = connection_matrix[self.target_idx].astype(mx.int32)
 
-        source_embeddings = self.source_message_fn @ node_embeddings.transpose()
-        target_embeddings = self.target_message_fn @ node_embeddings.transpose()
+        source_embeddings = node_embeddings @ self.source_message_fn
+        target_embeddings = node_embeddings @ self.target_message_fn
 
-        filtered_source_embeddings = mx.take(source_embeddings, source_idx.astype(mx.int32))
-        filtered_target_embeddings = mx.take(target_embeddings, target_idx.astype(mx.int32))
+        filtered_source_embeddings = mx.take(source_embeddings, source_idx)
+        filtered_target_embeddings = mx.take(target_embeddings, target_idx)
 
-        message = mx.concatenate([filtered_source_embeddings, filtered_target_embeddings], axis=-1)
+        filtered_source_embeddings = mx.expand_dims(filtered_source_embeddings, axis=1)
+        filtered_target_embeddings = mx.expand_dims(filtered_target_embeddings, axis=1)
+
+        message = filtered_source_embeddings + filtered_target_embeddings
+        message = self.relu(message)
 
         agg_message = mx.zeros([self.num_nodes, self.dim_proj])
 
-        if (aggregation_fn is aggregation_fn.SUM):
+        if (self.aggregation_fn is aggregation_fn.SUM):
             agg_message = agg_message.at[target_idx].add(message)
 
-        elif (aggregation_fn is aggregation_fn.AVG):
+        elif (self.aggregation_fn is aggregation_fn.AVG):
             agg_message = agg_message.at[target_idx].add(message)
-            denominator = mx.zeros([self.num_nodes]).at[target_idx].add(1)
-            agg_message = agg_message.at[target_idx].div(denominator)
+            denominator = mx.zeros([self.num_nodes, 1]).at[target_idx].add(1)
 
-        elif (aggregation_fn is aggregation_fn.MAX):
+            print(agg_message.shape, denominator.shape, target_idx.shape)
+
+            agg_message = agg_message / denominator
+
+        elif (self.aggregation_fn is aggregation_fn.MAX):
             agg_message = agg_message.at[target_idx].maximum(message)
 
-        elif (aggregation_fn is aggregation_fn.MIN):
+        elif (self.aggregation_fn is aggregation_fn.MIN):
             agg_message = agg_message.at[target_idx].minimum(message)
 
         agg_message = self.dropout(agg_message)
@@ -82,9 +88,10 @@ class mp_layer(nn.Module):
 
 
 class mpnn(nn.Module):
-    def __init__(self, num_nodes: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int, num_out_layers, num_classes: int):
+    def __init__(self, num_nodes: int,embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int, num_out_layers, num_classes: int):
         super(mpnn, self).__init__()
 
+        self.embedding_dim = embedding_dim
         self.dim_proj = dim_proj
         self.num_nodes = num_nodes
         self.dropout_prob = dropout_prob
@@ -92,19 +99,19 @@ class mpnn(nn.Module):
         self.aggregation_function_fn = aggregation_fn
 
         self.mp_layer = [
-            mp_layer(num_nodes, dim_proj, dropout_prob, skip_connections, aggregation_fn)
+            mp_layer(num_nodes, embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn)
             for _ in range(num_mp_layers)
         ]
 
         self.out_layer = [
-            nn.Linear(dim_proj, dim_proj)
+            nn.Linear(embedding_dim, embedding_dim)
             for _ in range(num_out_layers)
-        ] + [nn.Linear(dim_proj, num_classes)]
+        ] + [nn.Linear(embedding_dim, num_classes)]
 
     def __call__(self, data):
         node_embeddings, connection_matrix = data
 
-        assert node_embeddings.shape[1] == self.dim_proj, f'Incorrect node embedding size. Expected {self.dim_proj}, got {node_embeddings.shape[1]}'
+        assert node_embeddings.shape[1] == self.embedding_dim, f'Incorrect node embedding size. Expected {self.embedding_dim}, got {node_embeddings.shape[1]}'
 
         for mp_layer in self.mp_layer:
             node_embeddings = mp_layer(connection_matrix, node_embeddings)
@@ -116,10 +123,11 @@ class mpnn(nn.Module):
 
 model_config = {
     'num_nodes': 2708,
-    'dim_proj': 1433,
+    'embedding_dim': 1433,
+    'dim_proj': 8,
     'dropout_prob': 0.5,
     'skip_connections': True,
-    'aggregation_fn': aggregation_fn.AVG,
+    'aggregation_fn': aggregation_fn.MAX,
     'num_mp_layers': 2,
     'num_out_layers': 1,
     'num_classes': 7
@@ -138,7 +146,7 @@ def pickle_read(path):
     with open(path, 'rb') as f:
         return pickle.load(f, encoding='latin1')
 
-data_dir = '../gat/data/CORA'
+data_dir = '../datasets/CORA/data'
 
 allx  = pickle_read(os.path.join(data_dir, 'allx'))
 ally  = pickle_read(os.path.join(data_dir, 'ally'))
@@ -184,5 +192,12 @@ for i in range(100000):
     optimizer.update(model, grads)
     mx.eval(model.state, optimizer.state)
 
-    if (i % 100 == 0):
+    if (i % 10 == 0):
         print(f'Epoch {i}: Loss {loss:.4f}, Accuracy {eval_fn(model, data, ground_truth):.4f}')
+
+
+print(model)
+
+
+model.parameters().keys()
+model.parameters()['mp_layer']

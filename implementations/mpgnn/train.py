@@ -51,7 +51,8 @@ def main():
     # Model configuration
     model_config = {
         'num_nodes': 2708,
-        'dim_proj': 1433,
+        'embedding_dim': 1433,
+        'dim_proj': 8,
         'dropout_prob': 0.5,
         'skip_connections': True,
         'aggregation_fn': args.aggregation_fn,
