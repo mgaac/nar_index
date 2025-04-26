@@ -9,12 +9,6 @@ class aggregation_fn(Enum):
     MAX = 3
     MIN = 4
 
-class aggregation_fn(Enum):
-    SUM = 1
-    AVG = 2
-    MAX = 3
-    MIN = 4
-
 class mp_layer(nn.Module):
     def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum):
         super().__init__()
@@ -38,24 +32,25 @@ class mp_layer(nn.Module):
 
     def __call__(self, connection_matrix, node_embeddings):
 
-        connection_matrix = self.dropout(connection_matrix)
+        mask = mx.random.bernoulli(self.dropout_prob, connection_matrix.shape)
+        connection_matrix = connection_matrix * mask
+
         node_embeddings = self.dropout(node_embeddings)
 
-        print(connection_matrix)
-
-        source_idx = connection_matrix[self.source_idx].astype(mx.int32)
-        target_idx = connection_matrix[self.target_idx].astype(mx.int32)
+        source_idx = connection_matrix[self.source_idx]
+        target_idx = connection_matrix[self.target_idx]
 
         source_embeddings = node_embeddings @ self.source_message_fn
         target_embeddings = node_embeddings @ self.target_message_fn
 
-        filtered_source_embeddings = mx.take(source_embeddings, source_idx)
-        filtered_target_embeddings = mx.take(target_embeddings, target_idx)
+        filtered_source_embeddings = mx.take(source_embeddings, source_idx, axis=1)
+        filtered_target_embeddings = mx.take(target_embeddings, target_idx, axis=1)
 
         message = filtered_source_embeddings + filtered_target_embeddings
         message = self.relu(message)
 
         agg_message = mx.zeros([self.num_nodes, self.dim_proj])
+
 
         if (self.aggregation_fn == aggregation_fn.SUM):
             agg_message = agg_message.at[target_idx].add(message)
@@ -63,9 +58,6 @@ class mp_layer(nn.Module):
         elif (self.aggregation_fn == aggregation_fn.AVG):
             agg_message = agg_message.at[target_idx].add(message)
             denominator = mx.zeros([self.num_nodes, 1]).at[target_idx].add(1)
-
-            print(agg_message.shape, denominator.shape, target_idx.shape)
-
             agg_message = agg_message /  mx.maximum(denominator, 1e-6)
 
         elif (self.aggregation_fn == aggregation_fn.MAX):

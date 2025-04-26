@@ -40,8 +40,13 @@ class mp_layer(nn.Module):
 
     def __call__(self, connection_matrix, node_embeddings):
 
-        connection_matrix = self.dropout(connection_matrix)
+        mask = mx.random.bernoulli(self.dropout_prob, connection_matrix.shape)
+        connection_matrix = connection_matrix * mask
+
+
         node_embeddings = self.dropout(node_embeddings)
+
+        print(mx.maximum(connection_matrix, 2708))
 
         source_idx = connection_matrix[self.source_idx].astype(mx.int32)
         target_idx = connection_matrix[self.target_idx].astype(mx.int32)
@@ -52,29 +57,26 @@ class mp_layer(nn.Module):
         filtered_source_embeddings = mx.take(source_embeddings, source_idx)
         filtered_target_embeddings = mx.take(target_embeddings, target_idx)
 
-        filtered_source_embeddings = mx.expand_dims(filtered_source_embeddings, axis=1)
-        filtered_target_embeddings = mx.expand_dims(filtered_target_embeddings, axis=1)
-
         message = filtered_source_embeddings + filtered_target_embeddings
         message = self.relu(message)
 
         agg_message = mx.zeros([self.num_nodes, self.dim_proj])
 
-        if (self.aggregation_fn is aggregation_fn.SUM):
+        if (self.aggregation_fn == aggregation_fn.SUM):
             agg_message = agg_message.at[target_idx].add(message)
 
-        elif (self.aggregation_fn is aggregation_fn.AVG):
+        elif (self.aggregation_fn == aggregation_fn.AVG):
             agg_message = agg_message.at[target_idx].add(message)
             denominator = mx.zeros([self.num_nodes, 1]).at[target_idx].add(1)
 
             print(agg_message.shape, denominator.shape, target_idx.shape)
 
-            agg_message = agg_message / denominator
+            agg_message = agg_message /  mx.maximum(denominator, 1e-6)
 
-        elif (self.aggregation_fn is aggregation_fn.MAX):
+        elif (self.aggregation_fn == aggregation_fn.MAX):
             agg_message = agg_message.at[target_idx].maximum(message)
 
-        elif (self.aggregation_fn is aggregation_fn.MIN):
+        elif (self.aggregation_fn == aggregation_fn.MIN):
             agg_message = agg_message.at[target_idx].minimum(message)
 
         agg_message = self.dropout(agg_message)
@@ -121,6 +123,7 @@ class mpnn(nn.Module):
 
         return node_embeddings
 
+
 model_config = {
     'num_nodes': 2708,
     'embedding_dim': 1433,
@@ -129,7 +132,7 @@ model_config = {
     'skip_connections': True,
     'aggregation_fn': aggregation_fn.MAX,
     'num_mp_layers': 2,
-    'num_out_layers': 1,
+    'num_out_layers': 0,
     'num_classes': 7
 }
 
@@ -191,13 +194,10 @@ for i in range(100000):
     loss, grads = loss_and_grad_fn(model, data, ground_truth)
     optimizer.update(model, grads)
     mx.eval(model.state, optimizer.state)
+    break
 
     if (i % 10 == 0):
         print(f'Epoch {i}: Loss {loss:.4f}, Accuracy {eval_fn(model, data, ground_truth):.4f}')
 
 
-print(model)
-
-
-model.parameters().keys()
-model.parameters()['mp_layer']
+grads['out_layer'][0]
