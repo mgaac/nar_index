@@ -9,8 +9,8 @@ synthesis.
 **Implemented**
 - Neural Turing Machines - *Unsuccessful*
 - Graph Attention Networks - 83% accuracy in CORA
+- Message Passing Neural Neural (SUM) - 80% accuracy in CORA
 
 **Backlog**
-- Message Passing Graph Neural Networks
 - Neural Execution of Graph Algorithms
 - A Generalist Neural Algorithmic Learner
