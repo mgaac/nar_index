@@ -4,7 +4,7 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 
 from model import mpnn, aggregation_fn
-from data_loading import load_data
+from utils.datasets.CORA.scripts.data_loading import load_data
 
 from functools import partial
 
@@ -28,11 +28,11 @@ def parse_args():
         description="Train a GAT model on the CORA dataset"
     )
     parser.add_argument(
-        "--aggregation_fn", type=aggregation_fn, default=aggregation_fn.SUM,
+        "--aggregation_fn", type=aggregation_fn, default=aggregation_fn.MAX,
         help="Total number of training steps"
     )
     parser.add_argument(
-        "--data", type=str, default="data/CORA",
+        "--data", type=str, default="../../utils/datasets/CORA/data",
         help="Path to the dataset folder"
     )
     parser.add_argument(

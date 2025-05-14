@@ -6,8 +6,8 @@ from enum import Enum
 class aggregation_fn(Enum):
     SUM = 1
     AVG = 2
-    MAX = 3
     MIN = 4
+    MAX = 5
 
 class mp_layer(nn.Module):
     def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum):
