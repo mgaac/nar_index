@@ -178,15 +178,14 @@ def bfs_edge_list(edges, start):
     
     return state_history
 
+def calculate_stable_infinity(edges, start):
+    G = nx.Graph()
+    G.add_weighted_edges_from(edges)
+    lengths = nx.single_source_dijkstra_path_length(G, source=start, weight='weight')
+    return max(lengths.values()) + 1
+
 def bellman_ford_edge_list(edges, start):
     nodes = set([node for edge in edges for node in edge[:2]])
-    
-    # Calculate longest shortest path + 1 for stable infinity
-    def calculate_stable_infinity(edges, start):
-        G = nx.Graph()
-        G.add_weighted_edges_from(edges)
-        lengths = nx.single_source_dijkstra_path_length(G, source=start, weight='weight')
-        return max(lengths.values()) + 1
     
     INFINITY = calculate_stable_infinity(edges, start)
     
@@ -208,3 +207,52 @@ def bellman_ford_edge_list(edges, start):
         })
     
     return history
+
+def prim_edge_list(edges, start):
+    nodes = defaultdict(list)
+    for u, v, w in edges:
+        nodes[u].append((v, w))
+        nodes[v].append((u, w))
+
+    INFINITY = calculate_stable_infinity(edges, start)
+    
+    state = {node: 1 if node == start else 0 for node in nodes}
+    distance = {node: 0 if node == start else INFINITY for node in nodes}
+
+    history = [{'state': state.copy(), 'distance': distance.copy()}]
+    
+    queue = deque([start])
+    visited = set([start])
+
+    while queue:
+        u = queue.popleft()
+        next_node, _ = min(nodes[u], key=lambda x: x[1])
+        queue.append(next_node)
+        visited.add(next_node)
+
+        history.append({'state': state.copy(), 'distance': distance.copy()})
+
+    return history
+
+def generate_targets(graph, start, task):
+    if task == task.PARALLEL_ALGORIHTM:
+        bfs = bfs_edge_list(graph, start)
+        bf = bellman_ford_edge_list(graph, start)
+
+        bf_dist = mx.array([h['distance'] for h in bf])
+        bf_pred = mx.array([h['predecessor'] for h in bf])
+
+        bf = mx.concat(bf_pred, bf_dist, axis=0)
+        bfs = mx.array(bfs)
+
+        return mx.concat([bfs, bf], axis=0)
+    
+    elif task == task.SEQUENTIAL_ALGORITHM:
+        prim = prim_edge_list(graph, start)
+        prim_dist = mx.array([h['distance'] for h in prim])
+        prim_state = mx.array([h['state'] for h in prim])
+
+        prim = mx.concat(prim_state, prim_dist, axis=0)
+        prim = mx.array(prim)
+
+        return prim
