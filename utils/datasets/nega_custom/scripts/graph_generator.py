@@ -1,5 +1,3 @@
-# utils/datasets/scripts/graph_generator.py
-
 import networkx as nx
 import numpy as np
 import random
@@ -81,7 +79,7 @@ def save_graphs(graphs, filename):
         pickle.dump(edge_lists, f)
 
 def load_graphs(filename):
-    with open(filename, 'rb') as f:
+    with open('utils/datasets/nega_custom/data/' + filename, 'rb') as f:
         return pickle.load(f)
 
 if __name__ == "__main__":

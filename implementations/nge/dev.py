@@ -1,13 +1,14 @@
 import mlx
 import mlx.nn as nn
 import mlx.core as mx
-import mlx.optim as optim
+import mlx.optimizers as optim
 import networkx as nx
 import numpy as np
 import random
 
 from enum import Enum
 from utils.datasets.nega_custom.scripts.graph_generator import load_graphs
+from collections import deque, defaultdict
 
 class task(Enum):
     PARALLEL_ALGORIHTM=0
@@ -62,7 +63,6 @@ class mp_layer(nn.Module):
 
         agg_message = mx.zeros([self.num_nodes, self.dim_proj])
 
-
         if (self.aggregation_fn == aggregation_fn.SUM):
             agg_message = agg_message.at[target_idx].add(message)
 
@@ -85,7 +85,6 @@ class mp_layer(nn.Module):
             new_node_embeddings = new_node_embeddings + node_embeddings
 
         return new_node_embeddings
-
 
 class mpnn(nn.Module):
     def __init__(self, num_nodes: int,embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int, num_out_layers, num_classes: int):
@@ -121,7 +120,6 @@ class mpnn(nn.Module):
 
         return node_embeddings
 
-
 #Dataset generation
 train_graphs = load_graphs('train_graphs.pkl')
 val_graphs = load_graphs('val_graphs.pkl')
@@ -129,7 +127,8 @@ test_graphs_20 = load_graphs('test_graphs_20.pkl')
 test_graphs_50 = load_graphs('test_graphs_50.pkl')
 test_graphs_100 = load_graphs('test_graphs_100.pkl')
 
-#training
+print(train_graphs[3])
+
 
 model_config = {
     'num_nodes': 2708,
@@ -156,10 +155,56 @@ mx.eval(encoder.parameters())
 mx.eval(decoder.parameters())
 mx.eval(processor.parameters()) 
 
+
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
 
-def loss_fn(model, input, target):
+def bfs_edge_list(edges, start):
+    # Get all nodes
+    nodes = set([node for edge in edges for node in edge[:2]])
+    
+    # Initialize with binary values as per paper
+    state = {node: 1 if node == start else 0 for node in nodes}
+    state_history = [state.copy()]
+    
+    for _ in range(len(nodes) - 1):
+        new_state = state.copy()
+        for u, v, _ in edges:
+            if state[u] == 1:
+                new_state[v] = 1
+            if state[v] == 1:
+                new_state[u] = 1
+        state = new_state
+        state_history.append(state.copy())
+    
+    return state_history
 
-
-
-
+def bellman_ford_edge_list(edges, start):
+    nodes = set([node for edge in edges for node in edge[:2]])
+    
+    # Calculate longest shortest path + 1 for stable infinity
+    def calculate_stable_infinity(edges, start):
+        G = nx.Graph()
+        G.add_weighted_edges_from(edges)
+        lengths = nx.single_source_dijkstra_path_length(G, source=start, weight='weight')
+        return max(lengths.values()) + 1
+    
+    INFINITY = calculate_stable_infinity(edges, start)
+    
+    # Initialize distances and predecessors
+    distance = {node: 0 if node == start else INFINITY for node in nodes}
+    predecessor = {node: node if node == start else None for node in nodes}
+    
+    history = [{'distance': distance.copy(), 'predecessor': predecessor.copy()}]
+    
+    for _ in range(len(nodes) - 1):
+        for u, v, w in edges:
+            if distance[u] != INFINITY and distance[u] + w < distance[v]:
+                distance[v] = distance[u] + w
+                predecessor[v] = u
+        
+        history.append({
+            'distance': distance.copy(),
+            'predecessor': predecessor.copy()
+        })
+    
+    return history
