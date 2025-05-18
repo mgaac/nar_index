@@ -73,7 +73,10 @@ def generate_graphs(num_nodes):
 def save_graphs(graphs, filename):
     edge_lists = []
     for G in graphs:
-        edge_list = [(u, v, G[u][v]['weight']) for u, v in G.edges()]
+        edge_list = []
+        for u, v in G.edges():
+            edge_list.append((u, v, G[u][v]['weight']))
+            edge_list.append((v, u, G[u][v]['weight']))
         edge_lists.append(edge_list)
     with open(filename, 'wb') as f:
         pickle.dump(edge_lists, f)

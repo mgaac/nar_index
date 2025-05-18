@@ -42,7 +42,7 @@ class mp_layer(nn.Module):
         self.dropout = nn.Dropout(dropout_prob)
         self.relu = nn.ReLU()
 
-    def __call__(self, connection_matrix, node_embeddings):
+    def __call__(self, connection_matrix, node_embeddings, edge_weights=None):
 
         mask = mx.random.bernoulli(self.dropout_prob, connection_matrix.shape)
         connection_matrix = connection_matrix * mask
@@ -59,6 +59,10 @@ class mp_layer(nn.Module):
         filtered_target_embeddings = mx.take(target_embeddings, target_idx, axis=1)
 
         message = filtered_source_embeddings + filtered_target_embeddings
+
+        if edge_weights is not None:
+            message = message * edge_weights
+
         message = self.relu(message)
 
         agg_message = mx.zeros([self.num_nodes, self.dim_proj])
@@ -127,8 +131,6 @@ test_graphs_20 = load_graphs('test_graphs_20.pkl')
 test_graphs_50 = load_graphs('test_graphs_50.pkl')
 test_graphs_100 = load_graphs('test_graphs_100.pkl')
 
-print(train_graphs[3])
-
 
 model_config = {
     'num_nodes': 2708,
@@ -154,7 +156,6 @@ processor = mpnn(**model_config)
 mx.eval(encoder.parameters())
 mx.eval(decoder.parameters())
 mx.eval(processor.parameters()) 
-
 
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
 
@@ -191,7 +192,7 @@ def bellman_ford_edge_list(edges, start):
     
     # Initialize distances and predecessors
     distance = {node: 0 if node == start else INFINITY for node in nodes}
-    predecessor = {node: node if node == start else None for node in nodes}
+    predecessor = {node: node if node == start else distance[node] for node in nodes}
     
     history = [{'distance': distance.copy(), 'predecessor': predecessor.copy()}]
     
@@ -239,20 +240,43 @@ def generate_targets(graph, start, task):
         bfs = bfs_edge_list(graph, start)
         bf = bellman_ford_edge_list(graph, start)
 
-        bf_dist = mx.array([h['distance'] for h in bf])
-        bf_pred = mx.array([h['predecessor'] for h in bf])
+        bf_dist = mx.array([list(h['distance'].values()) for h in bf])
+        bf_pred = mx.array([list(h['predecessor'].values()) for h in bf])
+        bf = mx.concatenate([bf_pred, bf_dist], axis=0)
+        
+        bfs = mx.array([list(h.values()) for h in bfs])
 
-        bf = mx.concat(bf_pred, bf_dist, axis=0)
-        bfs = mx.array(bfs)
-
-        return mx.concat([bfs, bf], axis=0)
+        return mx.concatenate([bfs, bf], axis=0)
     
     elif task == task.SEQUENTIAL_ALGORITHM:
         prim = prim_edge_list(graph, start)
-        prim_dist = mx.array([h['distance'] for h in prim])
-        prim_state = mx.array([h['state'] for h in prim])
+        prim_dist = mx.array([list(h['distance'].values()) for h in prim])
+        prim_state = mx.array([list(h['state'].values()) for h in prim])
 
-        prim = mx.concat(prim_state, prim_dist, axis=0)
+        prim = mx.concatenate([prim_state, prim_dist], axis=0)
         prim = mx.array(prim)
 
         return prim
+
+# Process each graph individually to reduce memory usage
+num_graphs_to_process = 1 # Change as needed
+
+parallel_targets = []
+sequential_targets = []
+
+for i, graph in enumerate(test_graphs_20[:num_graphs_to_process]):
+    pt = generate_targets(graph, 0, task.PARALLEL_ALGORIHTM)
+    st = generate_targets(graph, 0, task.SEQUENTIAL_ALGORITHM)
+    parallel_targets.append(pt)
+    sequential_targets.append(st)
+    print(f"Graph {i}: parallel_target shape: {pt.shape}, sequential_target shape: {st.shape}")
+
+# Repeat for other datasets as needed
+# for i, graph in enumerate(val_graphs[:num_graphs_to_process]):
+#     ...
+# for i, graph in enumerate(test_graphs_20[:num_graphs_to_process]):
+#     ...
+# for i, graph in enumerate(test_graphs_50[:num_graphs_to_process]):
+#     ...
+# for i, graph in enumerate(test_graphs_100[:num_graphs_to_process]):
+#     ...
