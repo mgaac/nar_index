@@ -1,4 +1,3 @@
-import mlx
 import mlx.nn as nn
 import mlx.core as mx
 import mlx.optimizers as optim
@@ -42,10 +41,15 @@ class mp_layer(nn.Module):
         self.dropout = nn.Dropout(dropout_prob)
         self.relu = nn.ReLU()
 
-    def __call__(self, connection_matrix, node_embeddings, edge_weights=None):
+    def __call__(self, connection_matrix, node_embeddings):
 
         mask = mx.random.bernoulli(self.dropout_prob, connection_matrix.shape)
         connection_matrix = connection_matrix * mask
+
+        edge_weights = mx.expand_dims(connection_matrix[2], axis=0)
+        edge_weights = mx.expand_dims(edge_weights, axis=-1)
+
+        connection_matrix = connection_matrix[:2].astype(mx.int32)
 
         node_embeddings = self.dropout(node_embeddings)
 
@@ -60,8 +64,7 @@ class mp_layer(nn.Module):
 
         message = filtered_source_embeddings + filtered_target_embeddings
 
-        if edge_weights is not None:
-            message = message * edge_weights
+        message = message * edge_weights
 
         message = self.relu(message)
 
@@ -91,7 +94,7 @@ class mp_layer(nn.Module):
         return new_node_embeddings
 
 class mpnn(nn.Module):
-    def __init__(self, num_nodes: int,embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int, num_out_layers, num_classes: int):
+    def __init__(self, num_nodes: int,embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
         super(mpnn, self).__init__()
 
         self.embedding_dim = embedding_dim
@@ -106,11 +109,6 @@ class mpnn(nn.Module):
             for _ in range(num_mp_layers)
         ]
 
-        self.out_layer = [
-            nn.Linear(embedding_dim, embedding_dim)
-            for _ in range(num_out_layers)
-        ] + [nn.Linear(embedding_dim, num_classes)]
-
     def __call__(self, data):
         node_embeddings, connection_matrix = data
 
@@ -119,10 +117,24 @@ class mpnn(nn.Module):
         for mp_layer in self.mp_layer:
             node_embeddings = mp_layer(connection_matrix, node_embeddings)
 
-        for out_layer in self.out_layer:
-            node_embeddings = out_layer(node_embeddings)
-
         return node_embeddings
+    
+class nge(nn.Module):
+    def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
+        super(nge, self).__init__()
+        
+        self.encoder = nn.Linear(num_nodes, embedding_dim)
+        self.decoder = nn.Linear(embedding_dim, 1)
+        self.processor = mpnn(num_nodes, embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
+    
+    def __call__(self, data):
+        node_embeddings, connection_matrix = data
+
+        node_embeddings = self.encoder(node_embeddings)
+        new_node_embeddings = self.processor((node_embeddings, connection_matrix))
+        output = self.decoder(new_node_embeddings)
+
+        return new_node_embeddings, output
 
 #Dataset generation
 train_graphs = load_graphs('train_graphs.pkl')
@@ -133,15 +145,13 @@ test_graphs_100 = load_graphs('test_graphs_100.pkl')
 
 
 model_config = {
-    'num_nodes': 2708,
-    'embedding_dim': 1433,
-    'dim_proj': 8,
+    'num_nodes': 20,
+    'embedding_dim': 32,
+    'dim_proj': 1,
     'dropout_prob': 0.5,
     'skip_connections': True,
-    'aggregation_fn': aggregation_fn.SUM,
-    'num_mp_layers': 1,
-    'num_out_layers': 1,
-    'num_classes': 7
+    'aggregation_fn': aggregation_fn.MAX,
+    'num_mp_layers': 1
 }
 
 hyper_params = {
@@ -149,12 +159,12 @@ hyper_params = {
     'num_steps': 1000
 }
 
-encoder = nn.Linear(model_config["embedding_dim"], model_config["embedding_dim"])
-decoder = nn.Linear(model_config["embedding_dim"], model_config["embedding_dim"])
-processor = mpnn(**model_config)
-
-mx.eval(encoder.parameters())
-mx.eval(decoder.parameters())
-mx.eval(processor.parameters()) 
-
+model = nge(**model_config)
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
+
+embeddings = mx.expand_dims(train_graphs['targets'][0]['parallel'][0], axis=0)
+connection_matrix = train_graphs['connection_matrices'][0]
+
+new_node_embeddings, output = model((embeddings, connection_matrix))
+
+print(output.shape, new_node_embeddings.shape)
