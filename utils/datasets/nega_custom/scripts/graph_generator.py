@@ -150,7 +150,7 @@ def bellman_ford_edge_list(edges, start):
     nodes = set([node for edge in edges for node in edge[:2]])
     INFINITY = calculate_stable_infinity(edges, start)
     distance = {node: 0 if node == start else INFINITY for node in nodes}
-    predecessor = {node: node if node == start else distance[node] for node in nodes}
+    predecessor = {node: node for node in nodes}
     history = [{'distance': distance.copy(), 'predecessor': predecessor.copy()}]
     for _ in range(len(nodes) - 1):
         for u, v, w in edges:
@@ -193,25 +193,29 @@ def prim_edge_list(edges, start):
         history.append({'state': state.copy(), 'distance': distance.copy()})
     return history
 
-def generate_targets(graph, start, task):
-    if task == task.PARALLEL_ALGORIHTM:
+def generate_targets(graph, start, task_type):
+    if task_type == task.PARALLEL_ALGORIHTM:
         bfs = bfs_edge_list(graph, start)
         bf = bellman_ford_edge_list(graph, start)
         bf_dist = mx.array([list(h['distance'].values()) for h in bf])
         bf_pred = mx.array([list(h['predecessor'].values()) for h in bf])
-        bf = mx.concatenate([bf_pred, bf_dist], axis=0)
-        bfs = mx.array([list(h.values()) for h in bfs])
+        bfs_state = mx.array([list(h.values()) for h in bfs])
 
-        return mx.concatenate([bfs, bf], axis=0)
+        return {
+            'bfs_state': bfs_state,
+            'bf_distance': bf_dist,
+            'bf_predecessor': bf_pred,
+        }
 
-    elif task == task.SEQUENTIAL_ALGORITHM:
+    elif task_type == task.SEQUENTIAL_ALGORITHM:
         prim = prim_edge_list(graph, start)
         prim_dist = mx.array([list(h['distance'].values()) for h in prim])
         prim_state = mx.array([list(h['state'].values()) for h in prim])
-        prim = mx.concatenate([prim_state, prim_dist], axis=0)
-        prim = mx.array(prim)
 
-        return prim
+        return {
+            'prim_state': prim_state,
+            'prim_distance': prim_dist,
+        }
     
 if __name__ == "__main__":
     # Generate graphs with progress bars
