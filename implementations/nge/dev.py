@@ -12,7 +12,7 @@ from collections import deque, defaultdict
 class task(Enum):
     PARALLEL_ALGORIHTM=0
     SEQUENTIAL_ALGORITHM=1
-
+ 
 # Model Architecture
 class aggregation_fn(Enum):
     SUM = 1
@@ -123,18 +123,37 @@ class nge(nn.Module):
     def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
         super(nge, self).__init__()
         
-        self.encoder = nn.Linear(num_nodes, embedding_dim)
-        self.decoder = nn.Linear(embedding_dim, 1)
-        self.processor = mpnn(num_nodes, embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
+        self.parallel_encoder = nn.Linear(num_nodes, embedding_dim)
+        self.sequential_encoder = nn.Linear(num_nodes, embedding_dim)
+
+        self.parallel_decoder = nn.Linear(embedding_dim, 3)
+        self.sequential_decoder = nn.Linear(embedding_dim, 2)
     
-    def __call__(self, data):
+        self.parallel_termination_fn = nn.Sequential(nn.Linear(2 * embedding_dim, 1), nn.ReLU())
+        self.sequential_termination_fn = nn.Sequential(nn.Linear(2 * embedding_dim, 1), nn.ReLU())
+
+        self.processor = mpnn(num_nodes, embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
+
+    def __call__(self, data, task):
         node_embeddings, connection_matrix = data
 
-        node_embeddings = self.encoder(node_embeddings)
-        new_node_embeddings = self.processor((node_embeddings, connection_matrix))
-        output = self.decoder(new_node_embeddings)
+        if task == task.PARALLEL_ALGORIHTM:
+            node_embeddings = self.parallel_encoder(node_embeddings)
+            new_node_embeddings = self.processor((node_embeddings, connection_matrix))
+            output = self.parallel_decoder(new_node_embeddings)
+        elif task == task.SEQUENTIAL_ALGORITHM:
+            node_embeddings = self.sequential_encoder(node_embeddings)
+            new_node_embeddings = self.processor((node_embeddings, connection_matrix))
+            output = self.sequential_decoder(new_node_embeddings)
 
-        return new_node_embeddings, output
+        avg_node_embeddings = mx.mean(new_node_embeddings, axis=0)
+
+        if task == task.PARALLEL_ALGORIHTM:
+            termination_prob = self.parallel_termination_fn(mx.concatenate([new_node_embeddings, avg_node_embeddings], axis=1))
+        elif task == task.SEQUENTIAL_ALGORITHM:
+            termination_prob = self.sequential_termination_fn(mx.concatenate([new_node_embeddings, avg_node_embeddings], axis=1))
+
+        return new_node_embeddings, output, termination_prob
 
 #Dataset generation
 train_graphs = load_graphs('train_graphs.pkl')
@@ -162,9 +181,30 @@ hyper_params = {
 model = nge(**model_config)
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
 
-embeddings = mx.expand_dims(train_graphs['targets'][0]['parallel'][0], axis=0)
-connection_matrix = train_graphs['connection_matrices'][0]
 
-new_node_embeddings, output = model((embeddings, connection_matrix))
+def sequential_loss_fn(model, input, regular_target, termination_target):
+    new_node_embeddings, output, termination_prob = model(input, task.SEQUENTIAL_ALGORITHM)
+    state, predesecor = output[:,0], output[:,1]
 
-print(output.shape, new_node_embeddings.shape)
+    reachability_target, predesecor_target = regular_target
+
+    state_loss = nn.losses.binary_cross_entropy(state, reachability_target)
+    pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target)
+
+    termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
+
+    return (state_loss, pred_loss, termination_loss), new_node_embeddings
+
+def parallel_loss_fn(model, input, regular_target, termination_target):
+    new_node_embeddings, output, termination_prob = model(input, task.PARALLEL_ALGORIHTM)
+    bf_state, bfs_predesecor, bfs_distance = output[:,0], output[:,1], output[:,2]
+
+    reachability_target, predesecor_target, distance_target = regular_target
+
+    bf_state_loss = nn.losses.binary_cross_entropy(bf_state, reachability_target)
+    bfs_predesecor_loss = nn.losses.cross_entropy(bfs_predesecor, predesecor_target)
+    bfs_distance_loss = nn.losses.mse_loss(bfs_distance, distance_target)
+
+    termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
+
+    return (bf_state_loss, bfs_predesecor_loss, bfs_distance_loss, termination_loss), new_node_embeddings
