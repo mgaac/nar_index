@@ -3,7 +3,6 @@ import mlx.core as mx
 import mlx.optimizers as optim
 import networkx as nx
 import numpy as np
-import random
 
 from enum import Enum
 from utils.datasets.nega_custom.scripts.graph_generator import load_graphs
@@ -155,6 +154,7 @@ class nge(nn.Module):
 
         return new_node_embeddings, output, termination_prob
 
+
 #Dataset generation
 train_graphs = load_graphs('train_graphs.pkl')
 val_graphs = load_graphs('val_graphs.pkl')
@@ -175,36 +175,51 @@ model_config = {
 
 hyper_params = {
     'learning_rate': 0.001,
-    'num_steps': 1000
+    'num_steps': 10
 }
 
-model = nge(**model_config)
+parallel_encoder = nn.Linear(model_config['num_nodes'], model_config['embedding_dim'])
+sequential_encoder = nn.Linear(model_config['num_nodes'], model_config['embedding_dim'])
+
+parallel_decoder = nn.Linear(model_config['embedding_dim'], 3)
+sequential_decoder = nn.Linear(model_config['embedding_dim'], 2)
+
+parallel_termination_fn = nn.Sequential(nn.Linear(2 * model_config['embedding_dim'], 1), nn.ReLU())
+sequential_termination_fn = nn.Sequential(nn.Linear(2 * model_config['embedding_dim'], 1), nn.ReLU())
+
+processor = mpnn(**model_config)
+
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
 
+def loss_fn(model, input, regular_target, termination_target):
+    encoder, processor, decoder, termination_fn = model
+    features, connection_matrix = input
 
-def sequential_loss_fn(model, input, regular_target, termination_target):
-    new_node_embeddings, output, termination_prob = model(input, task.SEQUENTIAL_ALGORITHM)
+    embeddings = encoder(features)
+    new_node_embeddings = processor((embeddings, connection_matrix))
+    output = decoder(new_node_embeddings)
+
+    avg_node_embeddings = mx.mean(new_node_embeddings, axis=0)
+    termination_prob = termination_fn(mx.concatenate([new_node_embeddings, avg_node_embeddings], axis=1))
+
     state, predesecor = output[:,0], output[:,1]
-
     reachability_target, predesecor_target = regular_target
 
     state_loss = nn.losses.binary_cross_entropy(state, reachability_target)
     pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target)
-
     termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
 
     return (state_loss, pred_loss, termination_loss), new_node_embeddings
 
-def parallel_loss_fn(model, input, regular_target, termination_target):
-    new_node_embeddings, output, termination_prob = model(input, task.PARALLEL_ALGORIHTM)
-    bf_state, bfs_predesecor, bfs_distance = output[:,0], output[:,1], output[:,2]
+# Define the model tuple for parallel task (adjust as needed for sequential)
+model = (parallel_encoder, processor, parallel_decoder, parallel_termination_fn)
 
-    reachability_target, predesecor_target, distance_target = regular_target
+# Wrap the loss function
+loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
-    bf_state_loss = nn.losses.binary_cross_entropy(bf_state, reachability_target)
-    bfs_predesecor_loss = nn.losses.cross_entropy(bfs_predesecor, predesecor_target)
-    bfs_distance_loss = nn.losses.mse_loss(bfs_distance, distance_target)
-
-    termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
-
-    return (bf_state_loss, bfs_predesecor_loss, bfs_distance_loss, termination_loss), new_node_embeddings
+def train_step(model, input, regular_target, termination_target):
+    (loss, new_node_embeddings), grads = loss_and_grad_fn(
+        model, input, regular_target, termination_target
+    )
+    optimizer.update(model, grads)
+    return loss, new_node_embeddings
