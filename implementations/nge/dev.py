@@ -20,14 +20,13 @@ class aggregation_fn(Enum):
     MAX = 5
 
 class mp_layer(nn.Module):
-    def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum):
+    def __init__(self, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum):
         super().__init__()
 
         self.source_idx = 0
         self.target_idx = 1
 
         self.dim_proj = dim_proj
-        self.num_nodes = num_nodes
         self.dropout_prob = dropout_prob
         self.skip_connections = skip_connections
         self.aggregation_fn = aggregation_fn
@@ -41,6 +40,8 @@ class mp_layer(nn.Module):
         self.relu = nn.ReLU()
 
     def __call__(self, connection_matrix, node_embeddings):
+
+        num_nodes = node_embeddings.shape[0]
 
         mask = mx.random.bernoulli(self.dropout_prob, connection_matrix.shape)
         connection_matrix = connection_matrix * mask
@@ -67,14 +68,14 @@ class mp_layer(nn.Module):
 
         message = self.relu(message)
 
-        agg_message = mx.zeros([self.num_nodes, self.dim_proj])
+        agg_message = mx.zeros([num_nodes, self.dim_proj])
 
         if (self.aggregation_fn == aggregation_fn.SUM):
             agg_message = agg_message.at[target_idx].add(message)
 
         elif (self.aggregation_fn == aggregation_fn.AVG):
             agg_message = agg_message.at[target_idx].add(message)
-            denominator = mx.zeros([self.num_nodes, 1]).at[target_idx].add(1)
+            denominator = mx.zeros([num_nodes, 1]).at[target_idx].add(1)
             agg_message = agg_message /  mx.maximum(denominator, 1e-6)
 
         elif (self.aggregation_fn == aggregation_fn.MAX):
@@ -93,18 +94,17 @@ class mp_layer(nn.Module):
         return new_node_embeddings
 
 class mpnn(nn.Module):
-    def __init__(self, num_nodes: int,embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
+    def __init__(self, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
         super(mpnn, self).__init__()
 
         self.embedding_dim = embedding_dim
         self.dim_proj = dim_proj
-        self.num_nodes = num_nodes
         self.dropout_prob = dropout_prob
         self.skip_connections = skip_connections
         self.aggregation_function_fn = aggregation_fn
 
         self.mp_layer = [
-            mp_layer(num_nodes, embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn)
+            mp_layer(embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn)
             for _ in range(num_mp_layers)
         ]
 
@@ -119,19 +119,25 @@ class mpnn(nn.Module):
         return node_embeddings
     
 class nge(nn.Module):
-    def __init__(self, num_nodes: int, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
+    def __init__(self, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
         super(nge, self).__init__()
-        
-        self.parallel_encoder = nn.Linear(num_nodes, embedding_dim)
-        self.sequential_encoder = nn.Linear(num_nodes, embedding_dim)
+
+        self.parallel_encoder = nn.Linear(2, embedding_dim)
+        self.sequential_encoder = nn.Linear(2, embedding_dim)
 
         self.parallel_decoder = nn.Linear(embedding_dim, 3)
         self.sequential_decoder = nn.Linear(embedding_dim, 2)
-    
-        self.parallel_termination_fn = nn.Sequential(nn.Linear(2 * embedding_dim, 1), nn.ReLU())
-        self.sequential_termination_fn = nn.Sequential(nn.Linear(2 * embedding_dim, 1), nn.ReLU())
 
-        self.processor = mpnn(num_nodes, embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
+        self.parallel_termination_node = nn.Linear(embedding_dim, 1, bias=False)
+        self.parallel_termination_global = nn.Linear(embedding_dim, 1, bias=False)
+        self.parallel_termination_bias = mx.zeros([1])
+
+        self.sequential_termination_node = nn.Linear(embedding_dim, 1, bias=False)
+        self.sequential_termination_global = nn.Linear(embedding_dim, 1, bias=False)
+        self.sequential_termination_bias = mx.zeros([1])
+    
+
+        self.processor = mpnn(embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
 
     def __call__(self, data, task):
         node_embeddings, connection_matrix = data
@@ -148,25 +154,25 @@ class nge(nn.Module):
         avg_node_embeddings = mx.mean(new_node_embeddings, axis=0)
 
         if task == task.PARALLEL_ALGORIHTM:
-            termination_prob = self.parallel_termination_fn(mx.concatenate([new_node_embeddings, avg_node_embeddings], axis=1))
+            termination_prob = self.parallel_termination_node(new_node_embeddings) + self.parallel_termination_global(avg_node_embeddings) + self.parallel_termination_bias
+            termination_prob = mx.mean(termination_prob)
         elif task == task.SEQUENTIAL_ALGORITHM:
-            termination_prob = self.sequential_termination_fn(mx.concatenate([new_node_embeddings, avg_node_embeddings], axis=1))
-
-        return new_node_embeddings, output, termination_prob
+            termination_prob = self.sequential_termination_node(new_node_embeddings) + self.sequential_termination_global(avg_node_embeddings) + self.sequential_termination_bias
+            termination_prob = mx.mean(termination_prob)
+            return output, termination_prob
 
 
 #Dataset generation
 train_graphs = load_graphs('train_graphs.pkl')
-val_graphs = load_graphs('val_graphs.pkl')
-test_graphs_20 = load_graphs('test_graphs_20.pkl')
-test_graphs_50 = load_graphs('test_graphs_50.pkl')
-test_graphs_100 = load_graphs('test_graphs_100.pkl')
+# val_graphs = load_graphs('val_graphs.pkl')
+# test_graphs_20 = load_graphs('test_graphs_20.pkl')
+# test_graphs_50 = load_graphs('test_graphs_50.pkl')
+# test_graphs_100 = load_graphs('test_graphs_100.pkl')
 
 
 model_config = {
-    'num_nodes': 20,
-    'embedding_dim': 32,
-    'dim_proj': 1,
+    'embedding_dim': 100,
+    'dim_proj': 10,
     'dropout_prob': 0.5,
     'skip_connections': True,
     'aggregation_fn': aggregation_fn.MAX,
@@ -175,51 +181,77 @@ model_config = {
 
 hyper_params = {
     'learning_rate': 0.001,
-    'num_steps': 10
+    'num_graphs': 10
 }
 
-parallel_encoder = nn.Linear(model_config['num_nodes'], model_config['embedding_dim'])
-sequential_encoder = nn.Linear(model_config['num_nodes'], model_config['embedding_dim'])
-
-parallel_decoder = nn.Linear(model_config['embedding_dim'], 3)
-sequential_decoder = nn.Linear(model_config['embedding_dim'], 2)
-
-parallel_termination_fn = nn.Sequential(nn.Linear(2 * model_config['embedding_dim'], 1), nn.ReLU())
-sequential_termination_fn = nn.Sequential(nn.Linear(2 * model_config['embedding_dim'], 1), nn.ReLU())
-
-processor = mpnn(**model_config)
-
+model = nge(**model_config)
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
 
-def loss_fn(model, input, regular_target, termination_target):
-    encoder, processor, decoder, termination_fn = model
-    features, connection_matrix = input
+def sequential_loss_fn(model, input, graph_targets, termination_target):
+    output, termination_prob = model(input, task.SEQUENTIAL_ALGORITHM)
 
-    embeddings = encoder(features)
-    new_node_embeddings = processor((embeddings, connection_matrix))
-    output = decoder(new_node_embeddings)
-
-    avg_node_embeddings = mx.mean(new_node_embeddings, axis=0)
-    termination_prob = termination_fn(mx.concatenate([new_node_embeddings, avg_node_embeddings], axis=1))
+    termination_prob = mx.expand_dims(termination_prob, axis=0)
 
     state, predesecor = output[:,0], output[:,1]
-    reachability_target, predesecor_target = regular_target
+    reachability_target, predesecor_target = graph_targets
 
     state_loss = nn.losses.binary_cross_entropy(state, reachability_target)
     pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target)
     termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
 
-    return (state_loss, pred_loss, termination_loss), new_node_embeddings
+    total_loss = state_loss + pred_loss + termination_loss
 
-# Define the model tuple for parallel task (adjust as needed for sequential)
-model = (parallel_encoder, processor, parallel_decoder, parallel_termination_fn)
+    return total_loss, output
 
-# Wrap the loss function
-loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
-def train_step(model, input, regular_target, termination_target):
-    (loss, new_node_embeddings), grads = loss_and_grad_fn(
-        model, input, regular_target, termination_target
+loss_and_grad_fn = nn.value_and_grad(model, sequential_loss_fn)
+
+def train_step(model, input, graph_targets, termination_target):
+    (loss, output), grads = loss_and_grad_fn(
+        model, input, graph_targets, termination_target
     )
     optimizer.update(model, grads)
-    return loss, new_node_embeddings
+    return loss, output
+
+
+def train_sequential_model(model, dataset, num_graphs):
+    for graph_idx in range(num_graphs):
+        print(f'graph_idx: {graph_idx}')
+
+        graph_execution_history = dataset[graph_idx]['targets']['sequential']
+        connection_matrix = dataset[graph_idx]['connection_matrix']
+
+        residual_features = mx.zeros([len(graph_execution_history['prim_state'][0])])
+
+        for i in range(len(graph_execution_history['prim_state'])):
+            prim_state_target = graph_execution_history['prim_state'][i + 1]
+            prim_predesecor_target = graph_execution_history['prim_predecessor'][i + 1]
+
+            termination_target = mx.ones([1]) if i == len(graph_execution_history) - 1 else mx.zeros([1])
+
+            current_features = graph_execution_history['prim_state'][i]
+
+            input_features = mx.stack([current_features, residual_features], axis=1)
+
+            input = (input_features, connection_matrix)
+            graph_targets = (prim_predesecor_target, prim_state_target)
+
+            loss, state = train_step(model, input, graph_targets, termination_target)
+
+            residual_features = state[:, 0]
+
+
+
+
+
+
+            
+
+
+            
+
+
+
+
+
+

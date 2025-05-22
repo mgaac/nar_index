@@ -93,9 +93,7 @@ def edge_list_to_connection_matrix(edge_list):
     return mx.array([sources, targets, weights])
 
 def save_graphs(graphs, filename):
-    edge_lists = []
-    connection_matrices = []
-    targets = []
+    processed_graphs = []
     
     for G in graphs:
         # Create edge list with weights
@@ -105,21 +103,21 @@ def save_graphs(graphs, filename):
             edge_list.append((u, v, weight))
             edge_list.append((v, u, weight))  # Add reverse edge
             
-        edge_lists.append(edge_list)
-        connection_matrices.append(edge_list_to_connection_matrix(edge_list))
+        connection_matrix = edge_list_to_connection_matrix(edge_list)
         # Generate targets for both tasks
-        targets.append({
+        targets = {
             'parallel': generate_targets(edge_list, 0, task.PARALLEL_ALGORIHTM),
             'sequential': generate_targets(edge_list, 0, task.SEQUENTIAL_ALGORITHM)
+        }
+        
+        processed_graphs.append({
+            'connection_matrix': connection_matrix,
+            'targets': targets
         })
     
-    # Save edge lists, connection matrices, and targets
+    # Save the list of processed graphs
     with open(filename, 'wb') as f:
-        pickle.dump({
-            'edge_lists': edge_lists,
-            'connection_matrices': connection_matrices,
-            'targets': targets
-        }, f)
+        pickle.dump(processed_graphs, f)
 
 def load_graphs(filename):
     with open('utils/datasets/nega_custom/data/' + filename, 'rb') as f:
@@ -161,36 +159,104 @@ def bellman_ford_edge_list(edges, start):
     return history
 
 def prim_edge_list(edges, start):
-    nodes = defaultdict(list)
+    adj_list = defaultdict(list)
+    all_node_ids = set()
     for u, v, w in edges:
-        nodes[u].append((v, w))
-        nodes[v].append((u, w))
-    INFINITY = calculate_stable_infinity(edges, start)
-    # Initialize MST state and distance to MST
-    state = {node: 0 for node in nodes}
-    distance = {node: INFINITY for node in nodes}
+        adj_list[u].append((v, w))
+        adj_list[v].append((u, w))
+        all_node_ids.add(u)
+        all_node_ids.add(v)
+
+    if not edges and start is not None: # Handle case where start is given but no edges
+        all_node_ids.add(start)
+    
+    if not all_node_ids: # Completely empty graph
+        return [] 
+    
+    # Ensure start node is in the set of all nodes, even if isolated
+    if start not in all_node_ids:
+        # This case implies an invalid start node if other nodes/edges exist,
+        # or an isolated start node to be added to the set.
+        # For robustness, add it, assuming it's a valid scenario (e.g. single-node graph)
+        all_node_ids.add(start)
+
+
+    INFINITY = calculate_stable_infinity(edges, start) if edges else 0 # Avoid error if edges is empty
+
+    state = {node: 0 for node in all_node_ids}
+    distance = {node: INFINITY for node in all_node_ids}
+    # internal_predecessor is used by the algorithm to find the MST
+    internal_predecessor = {node: None for node in all_node_ids}
+
+    if start not in all_node_ids : # Should not happen if logic above is correct
+        # Fallback if start node was somehow missed (e.g. completely empty graph definition initially)
+        # This indicates a potential issue with graph definition or start node.
+        # However, to prevent crashes, initialize if necessary.
+        # A robust solution might raise an error if start is invalid.
+        # For now, we'll assume `start` is valid or becomes the only node.
+        if not all_node_ids: all_node_ids.add(start) # Ensure start is in all_node_ids
+        state[start] = 0
+        distance[start] = INFINITY
+        # internal_predecessor[start] will be set to start
+
     state[start] = 1
-    visited = {start}
-    # Initialize distances from the start node
-    for v, w in nodes[start]:
-        distance[v] = w
     distance[start] = 0
-    # Record initial history
-    history = [{'state': state.copy(), 'distance': distance.copy()}]
+    internal_predecessor[start] = start  # MODIFICATION: Start node's predecessor is itself
+
+    visited = {start}
+
+    # Initialize distances from the start node using the adjacency list
+    for v, w in adj_list.get(start, []):
+        if w < distance[v]:
+            distance[v] = w
+            internal_predecessor[v] = start
+    
+    history = []
+
+    # Helper function to prepare predecessor for history based on Equation (10)
+    def get_history_predecessor_snapshot(current_state_dict, current_internal_preds_dict, graph_nodes_set, start_node_id):
+        hist_preds_snapshot = {}
+        for node_id in graph_nodes_set:
+            if current_state_dict.get(node_id) == 1:  # Node is in MST (x_i^(t) = 1)
+                if node_id == start_node_id:
+                    hist_preds_snapshot[node_id] = start_node_id  # p_s = s
+                else:
+                    # For non-start nodes in MST, use their recorded internal predecessor
+                    hist_preds_snapshot[node_id] = current_internal_preds_dict.get(node_id)
+            else:  # Node is not in MST (x_i^(t) = 0)
+                hist_preds_snapshot[node_id] = None  # Undefined / perp
+        return hist_preds_snapshot
+
+    # Record initial history (after start node is processed)
+    initial_hist_preds = get_history_predecessor_snapshot(state, internal_predecessor, all_node_ids, start)
+    history.append({'state': state.copy(), 'predecessor': initial_hist_preds})
+    
     # Build MST
-    while len(visited) < len(nodes):
+    while len(visited) < len(all_node_ids):
         # Select unvisited node with smallest distance to current MST
-        u = min((node for node in nodes if node not in visited), key=lambda x: distance[x])
-        if distance[u] == INFINITY:
-            break
+        reachable_unvisited_nodes = {
+            node: dist for node, dist in distance.items() 
+            if node not in visited and dist != INFINITY
+        }
+        
+        if not reachable_unvisited_nodes:
+            break  # No more reachable nodes (handles disconnected graphs)
+
+        u = min(reachable_unvisited_nodes, key=reachable_unvisited_nodes.get)
+        
         visited.add(u)
-        state[u] = 1
-        # Update neighbor distances
-        for v, w in nodes[u]:
+        state[u] = 1  # Mark node u as part of the MST
+
+        # Update neighbor distances and internal_predecessors
+        for v, w in adj_list.get(u, []):
             if v not in visited and w < distance[v]:
                 distance[v] = w
-        # Record history after adding this node
-        history.append({'state': state.copy(), 'distance': distance.copy()})
+                internal_predecessor[v] = u
+        
+        # Record history after adding this node u
+        current_hist_preds = get_history_predecessor_snapshot(state, internal_predecessor, all_node_ids, start)
+        history.append({'state': state.copy(), 'predecessor': current_hist_preds})
+        
     return history
 
 def generate_targets(graph, start, task_type):
@@ -209,33 +275,43 @@ def generate_targets(graph, start, task_type):
 
     elif task_type == task.SEQUENTIAL_ALGORITHM:
         prim = prim_edge_list(graph, start)
-        prim_dist = mx.array([list(h['distance'].values()) for h in prim])
         prim_state = mx.array([list(h['state'].values()) for h in prim])
+        # Handle potential None values in predecessor before converting to mx.array
+        prim_predecessor_list = []
+        for h in prim:
+            current_preds = []
+            # Ensure consistent node ordering if nodes dictionary is not sorted by default
+            sorted_nodes = sorted(h['predecessor'].keys())
+            for node_key in sorted_nodes:
+                p_val = h['predecessor'][node_key]
+                current_preds.append(-1 if p_val is None else p_val)
+            prim_predecessor_list.append(current_preds)
+        prim_predecessor = mx.array(prim_predecessor_list)
 
         return {
             'prim_state': prim_state,
-            'prim_distance': prim_dist,
+            'prim_predecessor': prim_predecessor,
         }
     
 if __name__ == "__main__":
     # Generate graphs with progress bars
     train_graphs_nested = [generate_graphs(20) for _ in tqdm(range(100), desc="Generating train graphs", leave=False)]
-    val_graphs_nested = [generate_graphs(20) for _ in tqdm(range(5), desc="Generating validation graphs", leave=False)]
-    test_graphs_20_nested = [generate_graphs(20) for _ in tqdm(range(5), desc="Generating test graphs (20 nodes)", leave=False)]
-    test_graphs_50_nested = [generate_graphs(50) for _ in tqdm(range(5), desc="Generating test graphs (50 nodes)", leave=False)]
-    test_graphs_100_nested = [generate_graphs(100) for _ in tqdm(range(5), desc="Generating test graphs (100 nodes)", leave=False)]
+    # val_graphs_nested = [generate_graphs(20) for _ in tqdm(range(5), desc="Generating validation graphs", leave=False)]
+    # test_graphs_20_nested = [generate_graphs(20) for _ in tqdm(range(5), desc="Generating test graphs (20 nodes)", leave=False)]
+    # test_graphs_50_nested = [generate_graphs(50) for _ in tqdm(range(5), desc="Generating test graphs (50 nodes)", leave=False)]
+    # test_graphs_100_nested = [generate_graphs(100) for _ in tqdm(range(5), desc="Generating test graphs (100 nodes)", leave=False)]
 
     # Flatten the lists
     train_graphs = [graph for graphs in train_graphs_nested for graph in graphs]
-    val_graphs = [graph for graphs in val_graphs_nested for graph in graphs]
-    test_graphs_20 = [graph for graphs in test_graphs_20_nested for graph in graphs]
-    test_graphs_50 = [graph for graphs in test_graphs_50_nested for graph in graphs]
-    test_graphs_100 = [graph for graphs in test_graphs_100_nested for graph in graphs]
+    # val_graphs = [graph for graphs in val_graphs_nested for graph in graphs]
+    # test_graphs_20 = [graph for graphs in test_graphs_20_nested for graph in graphs]
+    # test_graphs_50 = [graph for graphs in test_graphs_50_nested for graph in graphs]
+    # test_graphs_100 = [graph for graphs in test_graphs_100_nested for graph in graphs]
 
     print("Saving graphs...\n")
 
     save_graphs(train_graphs, 'train_graphs.pkl')
-    save_graphs(val_graphs, 'val_graphs.pkl')
-    save_graphs(test_graphs_20, 'test_graphs_20.pkl')
-    save_graphs(test_graphs_50, 'test_graphs_50.pkl')
-    save_graphs(test_graphs_100, 'test_graphs_100.pkl')
+    # save_graphs(val_graphs, 'val_graphs.pkl')
+    # save_graphs(test_graphs_20, 'test_graphs_20.pkl')
+    # save_graphs(test_graphs_50, 'test_graphs_50.pkl')
+    # save_graphs(test_graphs_100, 'test_graphs_100.pkl')
