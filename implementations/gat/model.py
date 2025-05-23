@@ -12,7 +12,7 @@ class gat_layer(nn.Module):
         self.num_nodes = num_nodes
         self.num_att_heads = num_att_heads
 
-        self.source_scores_fn = mx.random.normal([1, num_att_heads, dim_proj]) # Allegedly trianable parameters
+        self.source_scores_fn = mx.random.normal([1, num_att_heads, dim_proj])
         self.target_scores_fn = mx.random.normal([1, num_att_heads, dim_proj])
 
         self.leakyReLU = nn.LeakyReLU(0.02)
