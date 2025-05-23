@@ -8,7 +8,7 @@ from enum import Enum
 from utils.datasets.nega_custom.scripts.graph_generator import load_graphs
 
 class task(Enum):
-    PARALLEL_ALGORIHTM=0
+    PARALLEL_ALGORITHM=0
     SEQUENTIAL_ALGORITHM=1
  
 # Model Architecture
@@ -118,7 +118,7 @@ class mpnn(nn.Module):
         return node_embeddings
     
 class decoder(nn.Module):
-    def __init__(self, embedding_dim: int, task: Enum):
+    def __init__(self, embedding_dim: int, task_type: Enum):
         super(decoder, self).__init__()
 
         self.source_idx = 0
@@ -128,9 +128,9 @@ class decoder(nn.Module):
 
         self.predesecor_prob = nn.Linear(2 * embedding_dim, 1)
 
-        if (task == task.PARALLEL_ALGORIHTM):
+        if (task_type == task.PARALLEL_ALGORITHM):
             self.other_outputs = nn.Linear(embedding_dim, 2)
-        elif (task == task.SEQUENTIAL_ALGORITHM):
+        elif (task_type == task.SEQUENTIAL_ALGORITHM):
             self.other_outputs = nn.Linear(embedding_dim, 1)
 
     def __call__(self, data):
@@ -176,7 +176,7 @@ class nge(nn.Module):
         self.parallel_encoder = nn.Linear(2, embedding_dim)
         self.sequential_encoder = nn.Linear(2, embedding_dim)
 
-        self.parallel_decoder = decoder(embedding_dim, task.PARALLEL_ALGORIHTM)
+        self.parallel_decoder = decoder(embedding_dim, task.PARALLEL_ALGORITHM)
         self.sequential_decoder = decoder(embedding_dim, task.SEQUENTIAL_ALGORITHM)
 
         self.parallel_termination_node = nn.Linear(embedding_dim, 1, bias=False)
@@ -190,24 +190,25 @@ class nge(nn.Module):
 
         self.processor = mpnn(embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
 
-    def __call__(self, data, task):
+    def __call__(self, data, task_type):
         node_embeddings, connection_matrix = data
 
-        if task == task.PARALLEL_ALGORIHTM:
+        if task_type == task.PARALLEL_ALGORITHM:
             node_embeddings = self.parallel_encoder(node_embeddings)
             new_node_embeddings = self.processor((node_embeddings, connection_matrix))
             output = self.parallel_decoder((new_node_embeddings, connection_matrix))
-        elif task == task.SEQUENTIAL_ALGORITHM:
+        elif task_type == task.SEQUENTIAL_ALGORITHM:
             node_embeddings = self.sequential_encoder(node_embeddings)
             new_node_embeddings = self.processor((node_embeddings, connection_matrix))
             output = self.sequential_decoder((new_node_embeddings, connection_matrix))
 
         avg_node_embeddings = mx.mean(new_node_embeddings, axis=0)
 
-        if task == task.PARALLEL_ALGORIHTM:
+        if task_type == task.PARALLEL_ALGORITHM:
             termination_prob = self.parallel_termination_node(new_node_embeddings) + self.parallel_termination_global(avg_node_embeddings) + self.parallel_termination_bias
             termination_prob = mx.mean(termination_prob)
-        elif task == task.SEQUENTIAL_ALGORITHM:
+            return output, termination_prob
+        elif task_type == task.SEQUENTIAL_ALGORITHM:
             termination_prob = self.sequential_termination_node(new_node_embeddings) + self.sequential_termination_global(avg_node_embeddings) + self.sequential_termination_bias
             termination_prob = mx.mean(termination_prob)
             return output, termination_prob
@@ -243,11 +244,12 @@ def sequential_loss_fn(model, input, graph_targets, termination_target):
 
     termination_prob = mx.expand_dims(termination_prob, axis=0)
 
-    state, predesecor = output[:,0], output[:,1]
+    state, predesecor = output
     reachability_target, predesecor_target = graph_targets
 
-    state_loss = nn.losses.binary_cross_entropy(state, reachability_target)
-    pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target)
+    state_loss = nn.losses.binary_cross_entropy(state, mx.expand_dims(reachability_target, axis=1))
+
+    pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target, reduction='sum')
     termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
 
     total_loss = state_loss + pred_loss + termination_loss
@@ -257,11 +259,32 @@ def sequential_loss_fn(model, input, graph_targets, termination_target):
 
 loss_and_grad_fn = nn.value_and_grad(model, sequential_loss_fn)
 
-def train_step(model, input, graph_targets, termination_target):
+def train_step(model, input, graph_targets, termination_target, debug=False):
     (loss, output), grads = loss_and_grad_fn(
         model, input, graph_targets, termination_target
     )
     optimizer.update(model, grads)
+    
+    if debug:
+        # Compute individual loss components for debugging (using exact same logic as loss function)
+        output_debug, termination_prob_debug = model(input, task.SEQUENTIAL_ALGORITHM)
+        termination_prob_debug = mx.expand_dims(termination_prob_debug, axis=0)
+        
+        state, predecessor = output_debug
+        state_target, predecessor_target = graph_targets
+        
+        # Compute losses exactly as in sequential_loss_fn
+        state_loss = nn.losses.binary_cross_entropy(state, mx.expand_dims(state_target, axis=1))
+        pred_loss = nn.losses.cross_entropy(predecessor, predecessor_target, reduction='sum')  # Same as loss function
+        termination_loss = nn.losses.binary_cross_entropy(termination_prob_debug, termination_target)
+        
+        debug_info = {
+            'targets': {'state': state_target, 'predecessor': predecessor_target, 'termination': termination_target},
+            'outputs': {'state': state, 'predecessor': predecessor, 'termination': termination_prob_debug},
+            'losses': {'state': float(state_loss.item()), 'predecessor': float(pred_loss.item()), 'termination': float(termination_loss.item())}
+        }
+        return loss, output, debug_info
+    
     return loss, output
 
 
@@ -295,61 +318,13 @@ def print_debug_info(graph_idx, step_idx, targets, outputs, losses, total_loss):
     print(f"  Binary Cross-Entropy (Term):     {losses['termination']:.6f}")
     print("-" * 50)
     print(f"  COMBINED TOTAL LOSS:             {total_loss:.6f}")
+    total_check = losses['state'] + losses['predecessor'] + losses['termination']
+    print(f"  VERIFICATION (Sum of parts):     {total_check:.6f}")
     print("=" * 80)
     print()
 
 
-def sequential_loss_fn_debug(model, input, graph_targets, termination_target):
-    """Enhanced loss function that returns detailed information for debugging"""
-    output, termination_prob = model(input, task.SEQUENTIAL_ALGORITHM)
-    
-    termination_prob = mx.expand_dims(termination_prob, axis=0)
-    
-    state, predecessor = output[:,0], output[:,1]
-    state_target, predecessor_target = graph_targets
-    
-    # Compute individual losses
-    state_loss = nn.losses.binary_cross_entropy(state, state_target)
-    pred_loss = nn.losses.cross_entropy(predecessor, predecessor_target)
-    termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
-    
-    total_loss = state_loss + pred_loss + termination_loss
-    
-    # Prepare debug information
-    debug_info = {
-        'targets': {
-            'state': state_target,
-            'predecessor': predecessor_target,
-            'termination': termination_target
-        },
-        'outputs': {
-            'state': state,
-            'predecessor': predecessor,
-            'termination': termination_prob
-        },
-        'losses': {
-            'state': float(state_loss),
-            'predecessor': float(pred_loss),
-            'termination': float(termination_loss)
-        }
-    }
-    
-    return total_loss, output, debug_info
-
-
-def train_step_debug(model, input, graph_targets, termination_target):
-    """Enhanced training step with debugging information"""
-    loss_and_grad_fn_debug = nn.value_and_grad(model, sequential_loss_fn_debug)
-    
-    (loss, output, debug_info), grads = loss_and_grad_fn_debug(
-        model, input, graph_targets, termination_target
-    )
-    optimizer.update(model, grads)
-    
-    return loss, output, debug_info
-
-
-def train_sequential_model(model, dataset, num_graphs):
+def train_sequential_model(model, dataset, num_graphs, debug=False):
     print("INITIATING SEQUENTIAL MODEL TRAINING PROTOCOL")
     print("=" * 80)
     
@@ -378,32 +353,32 @@ def train_sequential_model(model, dataset, num_graphs):
             input_features = mx.stack([current_features, residual_features], axis=1)
             input_data = (input_features, connection_matrix)
             
-            # Note: Fixed the order to match what the loss function expects
             graph_targets = (prim_state_target, prim_predecessor_target)
             
-            # Train and get debug info
-            loss, output, debug_info = train_step_debug(
-                model, input_data, graph_targets, termination_target
-            )
-            
-            # Print detailed debug information
-            print_debug_info(
-                graph_idx + 1, 
-                i + 1, 
-                debug_info['targets'], 
-                debug_info['outputs'], 
-                debug_info['losses'], 
-                float(loss)
-            )
+            # Train step with optional debugging
+            if debug:
+                loss, output, debug_info = train_step(
+                    model, input_data, graph_targets, termination_target, debug=True
+                )
+                print_debug_info(
+                    graph_idx + 1, i + 1, 
+                    debug_info['targets'], debug_info['outputs'], debug_info['losses'], 
+                    float(loss)
+                )
+            else:
+                loss, output = train_step(
+                    model, input_data, graph_targets, termination_target, debug=False
+                )
             
             # Update residual features for next step
-            residual_features = output[:, 0]
+            state, predecessor = output
+            residual_features = state[:, 0]
         
         print(f"GRAPH {graph_idx + 1} TRAINING COMPLETED SUCCESSFULLY")
         print("=" * 80)
         print()
 
-train_sequential_model(model, train_graphs, 1)
+train_sequential_model(model, train_graphs, 1, debug=True)
 
 
 
