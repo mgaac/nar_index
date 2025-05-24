@@ -12,6 +12,53 @@ class task(Enum):
     PARALLEL_ALGORIHTM = 0
     SEQUENTIAL_ALGORITHM = 1
 
+def binary_to_one_hot(binary_states):
+    """Convert binary states (0/1) to one-hot vectors [reachable, not_reachable]"""
+    # First, let's debug what we're getting
+    num_timesteps = len(binary_states)
+    num_nodes = len(binary_states[0]) if binary_states else 0
+    
+    # Create the array with explicit shape using Python lists first
+    result_list = []
+    
+    for t, state_dict in enumerate(binary_states):
+        timestep_data = []
+        for node in sorted(state_dict.keys()):
+            if state_dict[node] == 0:
+                timestep_data.append([0, 1])  # not reachable
+            else:
+                timestep_data.append([1, 0])  # reachable
+        result_list.append(timestep_data)
+    
+    # Convert to MLX array - this should preserve the 3D shape
+    result = mx.array(result_list)
+    return result
+
+def detect_termination(states):
+    """Detect when algorithm should terminate (no change between consecutive states)"""
+    termination = []
+    for i in range(len(states)):
+        if i == len(states) - 1:  # Last step - algorithm terminates
+            termination.append([0, 1])  # [continue, terminate]
+        elif i < len(states) - 1:
+            # Check if state changed from current to next
+            current_state = states[i]
+            next_state = states[i + 1]
+            
+            # Handle dictionary states (like distances) vs simple states
+            if isinstance(current_state, dict) and isinstance(next_state, dict):
+                states_equal = (current_state == next_state)
+            else:
+                states_equal = (current_state == next_state)
+                
+            if states_equal:
+                termination.append([0, 1])  # [continue, terminate] - no change, should terminate
+            else:
+                termination.append([1, 0])  # [continue, terminate] - state changed, continue
+        else:
+            termination.append([1, 0])  # [continue, terminate] - default continue
+    return mx.array(termination)
+
 def generate_graphs(num_nodes):
     graphs = []
 
@@ -35,38 +82,50 @@ def generate_graphs(num_nodes):
     graphs.append(G_er)
 
     # 5. Barabási-Albert graph (attach 4 or 5 edges)
-    m_ba = random.choice([4, 5])
-    G_ba = nx.barabasi_albert_graph(num_nodes, m_ba)
+    m_ba = min(random.choice([4, 5]), num_nodes - 1)  # Ensure m < num_nodes
+    if m_ba >= 1:  # Only create if valid
+        G_ba = nx.barabasi_albert_graph(num_nodes, m_ba)
+    else:
+        # Fallback to a simple path graph for very small graphs
+        G_ba = nx.path_graph(num_nodes)
     graphs.append(G_ba)
 
     # 6. 4-Community graph
-    community_size = num_nodes // 4
-    communities = [nx.erdos_renyi_graph(community_size, 0.7) for _ in range(4)]
-    G_4comm = nx.disjoint_union_all(communities)
-    # Add inter-community edges
-    nodes = list(G_4comm.nodes())
-    for i in range(len(nodes)):
-        for j in range(i+1, len(nodes)):
-            if G_4comm.nodes[nodes[i]].get('block', i // community_size) != G_4comm.nodes[nodes[j]].get('block', j // community_size):
-                if random.random() < 0.01:
-                    G_4comm.add_edge(nodes[i], nodes[j])
+    community_size = max(1, num_nodes // 4)  # Ensure at least 1 node per community
+    if community_size * 4 <= num_nodes:
+        communities = [nx.erdos_renyi_graph(community_size, 0.7) for _ in range(4)]
+        G_4comm = nx.disjoint_union_all(communities)
+        # Add inter-community edges
+        nodes = list(G_4comm.nodes())
+        for i in range(len(nodes)):
+            for j in range(i+1, len(nodes)):
+                if G_4comm.nodes[nodes[i]].get('block', i // community_size) != G_4comm.nodes[nodes[j]].get('block', j // community_size):
+                    if random.random() < 0.01:
+                        G_4comm.add_edge(nodes[i], nodes[j])
+    else:
+        # Fallback for very small graphs
+        G_4comm = nx.complete_graph(num_nodes)
     graphs.append(G_4comm)
 
     # 7. 4-Caveman graph
-    G_caveman = nx.caveman_graph(4, community_size)
-    # Remove intra-clique edges with probability 0.7
-    to_remove = []
-    for u, v in G_caveman.edges():
-        if u // community_size == v // community_size and random.random() < 0.7:
-            to_remove.append((u, v))
-    G_caveman.remove_edges_from(to_remove)
-    # Add shortcut edges
-    num_shortcuts = int(0.025 * num_nodes)
-    for _ in range(num_shortcuts):
-        u = random.randint(0, num_nodes - 1)
-        v = random.randint(0, num_nodes - 1)
-        if u // community_size != v // community_size:
-            G_caveman.add_edge(u, v)
+    if community_size >= 1 and community_size * 4 <= num_nodes:
+        G_caveman = nx.caveman_graph(4, community_size)
+        # Remove intra-clique edges with probability 0.7
+        to_remove = []
+        for u, v in G_caveman.edges():
+            if u // community_size == v // community_size and random.random() < 0.7:
+                to_remove.append((u, v))
+        G_caveman.remove_edges_from(to_remove)
+        # Add shortcut edges
+        num_shortcuts = int(0.025 * num_nodes)
+        for _ in range(num_shortcuts):
+            u = random.randint(0, num_nodes - 1)
+            v = random.randint(0, num_nodes - 1)
+            if u // community_size != v // community_size:
+                G_caveman.add_edge(u, v)
+    else:
+        # Fallback for very small graphs
+        G_caveman = nx.cycle_graph(num_nodes)
     graphs.append(G_caveman)
 
     # Add self-loops and edge weights to all graphs
@@ -265,17 +324,35 @@ def generate_targets(graph, start, task_type):
         bf = bellman_ford_edge_list(graph, start)
         bf_dist = mx.array([list(h['distance'].values()) for h in bf])
         bf_pred = mx.array([list(h['predecessor'].values()) for h in bf])
-        bfs_state = mx.array([list(h.values()) for h in bfs])
+        
+        # Convert BFS state to one-hot and add termination targets
+        bfs_state_one_hot = binary_to_one_hot(bfs)
+        bfs_termination = detect_termination(bfs)
+        
+        # For Bellman-Ford, we also need to detect convergence for termination
+        bf_states = [h['distance'] for h in bf]
+        bf_termination = detect_termination(bf_states)
+
+        # Debug print to see what shape we get
 
         return {
-            'bfs_state': bfs_state,
+            'bfs_state': bfs_state_one_hot,
+            'bfs_termination': bfs_termination,
             'bf_distance': bf_dist,
             'bf_predecessor': bf_pred,
+            'bf_termination': bf_termination,
         }
 
     elif task_type == task.SEQUENTIAL_ALGORITHM:
         prim = prim_edge_list(graph, start)
-        prim_state = mx.array([list(h['state'].values()) for h in prim])
+        
+        # Extract state history for one-hot conversion
+        prim_states = [h['state'] for h in prim]
+        prim_state_one_hot = binary_to_one_hot(prim_states)
+        prim_termination = detect_termination(prim_states)
+        
+        # Debug print to see what shape we get
+        
         # Handle potential None values in predecessor before converting to mx.array
         prim_predecessor_list = []
         for h in prim:
@@ -289,7 +366,8 @@ def generate_targets(graph, start, task_type):
         prim_predecessor = mx.array(prim_predecessor_list)
 
         return {
-            'prim_state': prim_state,
+            'prim_state': prim_state_one_hot,
+            'prim_termination': prim_termination,
             'prim_predecessor': prim_predecessor,
         }
     

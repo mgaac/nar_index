@@ -3,9 +3,131 @@ import mlx.core as mx
 import mlx.optimizers as optim
 import networkx as nx
 import numpy as np
+from tqdm import tqdm
 
 from enum import Enum
 from utils.datasets.nega_custom.scripts.graph_generator import load_graphs
+
+# Training Logger Classes
+class TrainingLogger:
+    """Base class for training loggers"""
+    def __init__(self, debug=False):
+        self.debug = debug
+    
+    def start_training(self, num_graphs):
+        """Called at the start of training"""
+        pass
+    
+    def start_graph(self, graph_idx, num_graphs, num_steps):
+        """Called at the start of each graph"""
+        pass
+    
+    def start_step(self, step_idx, num_steps):
+        """Called at the start of each step"""
+        pass
+    
+    def log_losses(self, loss, state_loss, pred_loss, termination_loss):
+        """Called to log losses for current step"""
+        pass
+    
+    def log_debug_info(self, state, predesecor, reachability_target, predesecor_target, termination_prob, termination_target):
+        """Called to log debug information"""
+        if self.debug:
+            self._print_debug_info(state, predesecor, reachability_target, predesecor_target, termination_prob, termination_target)
+    
+    def end_graph(self, graph_idx, avg_loss):
+        """Called at the end of each graph"""
+        pass
+    
+    def end_training(self, overall_avg_loss):
+        """Called at the end of training"""
+        pass
+    
+    def _print_debug_info(self, state, predesecor, reachability_target, predesecor_target, termination_prob, termination_target):
+        """Print detailed debug information comparing predictions with targets"""
+        print("\n    DEBUG INFO:")
+        print("    " + "-" * 40)
+        print(f"    Predecessor Predictions: {np.array(mx.argmax(predesecor, axis=1))}")
+        print(f"    Predecessor Targets:     {np.array(predesecor_target)}")
+        print(f"    State Predictions:       {np.array(mx.argmax(state, axis=1))}")
+        print(f"    State Targets:           {np.array(mx.argmax(reachability_target, axis=1))}")
+        print(f"    Termination Predictions: {np.array(termination_prob)}")
+        print(f"    Termination Probability: {float(mx.softmax(termination_prob, axis=0)[1]):.4f}")
+        print(f"    Termination Targets:     {np.array(termination_target)}")
+        print("    " + "-" * 40)
+
+class PrintLogger(TrainingLogger):
+    """Logger that uses organized print statements"""
+    def start_training(self, num_graphs):
+        print("=" * 60)
+        print("STARTING SEQUENTIAL MODEL TRAINING")
+        print(f"Number of graphs: {num_graphs}")
+        print(f"Debug mode: {'ON' if self.debug else 'OFF'}")
+        print("=" * 60)
+    
+    def start_graph(self, graph_idx, num_graphs, num_steps):
+        print(f"\n--- Training on Graph {graph_idx + 1}/{num_graphs} ---")
+        print(f"Graph has {num_steps} training steps")
+    
+    def start_step(self, step_idx, num_steps):
+        print(f"\n  Step {step_idx + 1}/{num_steps}:")
+    
+    def log_losses(self, loss, state_loss, pred_loss, termination_loss):
+        print(f"    Losses:")
+        print(f"      State Loss:       {state_loss:.6f}")
+        print(f"      Predecessor Loss: {pred_loss:.6f}")
+        print(f"      Termination Loss: {termination_loss:.6f}")
+        print(f"      Total Loss:       {loss:.6f}")
+    
+    def end_graph(self, graph_idx, avg_loss, num_steps=None):
+        print(f"\n  Graph {graph_idx + 1} Average Loss: {avg_loss:.6f}")
+    
+    def end_training(self, overall_avg_loss):
+        print("\n" + "=" * 60)
+        print("TRAINING COMPLETED")
+        print(f"Overall Average Loss: {overall_avg_loss:.6f}")
+        print("=" * 60)
+
+class TqdmLogger(TrainingLogger):
+    """Logger that uses tqdm progress bars"""
+    def __init__(self, debug=False):
+        super().__init__(debug)
+        self.graph_iterator = None
+        self.step_iterator = None
+    
+    def start_training(self, num_graphs):
+        self.graph_iterator = tqdm(range(num_graphs), desc="Training Graphs", unit="graph")
+    
+    def start_graph(self, graph_idx, num_graphs, num_steps):
+        self.step_iterator = tqdm(range(num_steps), desc=f"Graph {graph_idx + 1} Steps", unit="step", leave=False)
+    
+    def start_step(self, step_idx, num_steps):
+        pass  # tqdm handles step display automatically
+    
+    def log_losses(self, loss, state_loss, pred_loss, termination_loss):
+        if self.step_iterator:
+            self.step_iterator.set_postfix({
+                'Loss': f'{float(loss):.4f}',
+                'State': f'{float(state_loss):.4f}',
+                'Pred': f'{float(pred_loss):.4f}',
+                'Term': f'{float(termination_loss):.4f}'
+            })
+            self.step_iterator.update(1)
+    
+    def end_graph(self, graph_idx, avg_loss, num_steps=None):
+        if self.step_iterator:
+            self.step_iterator.close()
+        if self.graph_iterator:
+            self.graph_iterator.set_postfix({
+                'Avg Loss': f'{avg_loss:.4f}',
+                'Steps': num_steps or 0
+            })
+            self.graph_iterator.update(1)
+    
+    def end_training(self, overall_avg_loss):
+        if self.graph_iterator:
+            self.graph_iterator.close()
+        print(f"\nTraining completed! Overall Average Loss: {overall_avg_loss:.6f}")
 
 class task(Enum):
     PARALLEL_ALGORITHM=0
@@ -125,13 +247,12 @@ class decoder(nn.Module):
         self.target_idx = 1
 
         self.embedding_dim = embedding_dim
-
         self.predesecor_prob = nn.Linear(2 * embedding_dim, 1)
 
         if (task_type == task.PARALLEL_ALGORITHM):
-            self.other_outputs = nn.Linear(embedding_dim, 2)
+            self.state_outputs = nn.Linear(embedding_dim, 2)
         elif (task_type == task.SEQUENTIAL_ALGORITHM):
-            self.other_outputs = nn.Linear(embedding_dim, 1)
+            self.state_outputs = nn.Linear(embedding_dim, 2)
 
     def __call__(self, data):
         node_embeddings, connection_matrix = data
@@ -165,9 +286,9 @@ class decoder(nn.Module):
 
         predesecor_predictions = predesecor_predictions.at[target_idx, source_idx].add(edge_prob.squeeze())
 
-        other_predictions = self.other_outputs(node_embeddings)
+        state_predictions = self.state_outputs(node_embeddings)
 
-        return other_predictions, predesecor_predictions
+        return state_predictions, predesecor_predictions
     
 class nge(nn.Module):
     def __init__(self, embedding_dim: int, dim_proj: int, dropout_prob: float, skip_connections: bool, aggregation_fn: Enum, num_mp_layers: int):
@@ -179,13 +300,13 @@ class nge(nn.Module):
         self.parallel_decoder = decoder(embedding_dim, task.PARALLEL_ALGORITHM)
         self.sequential_decoder = decoder(embedding_dim, task.SEQUENTIAL_ALGORITHM)
 
-        self.parallel_termination_node = nn.Linear(embedding_dim, 1, bias=False)
-        self.parallel_termination_global = nn.Linear(embedding_dim, 1, bias=False)
-        self.parallel_termination_bias = mx.zeros([1])
+        self.parallel_termination_node = nn.Linear(embedding_dim, 2, bias=False)
+        self.parallel_termination_global = nn.Linear(embedding_dim, 2, bias=False)
+        self.parallel_termination_bias = mx.random.normal([2])
 
-        self.sequential_termination_node = nn.Linear(embedding_dim, 1, bias=False)
-        self.sequential_termination_global = nn.Linear(embedding_dim, 1, bias=False)
-        self.sequential_termination_bias = mx.zeros([1])
+        self.sequential_termination_node = nn.Linear(embedding_dim, 2, bias=False)
+        self.sequential_termination_global = nn.Linear(embedding_dim, 2, bias=False)
+        self.sequential_termination_bias = mx.random.normal([2])
     
 
         self.processor = mpnn(embedding_dim, dim_proj, dropout_prob, skip_connections, aggregation_fn, num_mp_layers)
@@ -206,11 +327,11 @@ class nge(nn.Module):
 
         if task_type == task.PARALLEL_ALGORITHM:
             termination_prob = self.parallel_termination_node(new_node_embeddings) + self.parallel_termination_global(avg_node_embeddings) + self.parallel_termination_bias
-            termination_prob = mx.mean(termination_prob)
+            termination_prob = mx.mean(termination_prob, axis=0)
             return output, termination_prob
         elif task_type == task.SEQUENTIAL_ALGORITHM:
             termination_prob = self.sequential_termination_node(new_node_embeddings) + self.sequential_termination_global(avg_node_embeddings) + self.sequential_termination_bias
-            termination_prob = mx.mean(termination_prob)
+            termination_prob = mx.mean(termination_prob, axis=0)
             return output, termination_prob
 
 
@@ -239,149 +360,101 @@ hyper_params = {
 model = nge(**model_config)
 optimizer = optim.Adam(learning_rate=hyper_params["learning_rate"])
 
-def sequential_loss_fn(model, input, graph_targets, termination_target):
+def sequential_loss_fn(model, input, graph_targets, termination_target, logger=None):
     output, termination_prob = model(input, task.SEQUENTIAL_ALGORITHM)
-
-    termination_prob = mx.expand_dims(termination_prob, axis=0)
 
     state, predesecor = output
     reachability_target, predesecor_target = graph_targets
 
-    state_loss = nn.losses.binary_cross_entropy(state, mx.expand_dims(reachability_target, axis=1))
+    state_loss = nn.losses.binary_cross_entropy(state, reachability_target, reduction='mean')
 
-    pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target, reduction='sum')
-    termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target)
+    pred_loss = nn.losses.cross_entropy(predesecor, predesecor_target, reduction='mean')
+    termination_loss = nn.losses.binary_cross_entropy(termination_prob, termination_target, reduction='mean')
 
     total_loss = state_loss + pred_loss + termination_loss
 
-    return total_loss, output
+    if logger:
+        logger.log_debug_info(state, predesecor, reachability_target, predesecor_target, termination_prob, termination_target)
+
+    return total_loss, (state_loss, pred_loss, termination_loss), output, termination_prob
 
 
 loss_and_grad_fn = nn.value_and_grad(model, sequential_loss_fn)
 
-def train_step(model, input, graph_targets, termination_target, debug=False):
-    (loss, output), grads = loss_and_grad_fn(
-        model, input, graph_targets, termination_target
+def train_step(model, input, graph_targets, termination_target, logger=None):
+    (loss, (state_loss, pred_loss, termination_loss), output, termination_prob), grads = loss_and_grad_fn(
+        model, input, graph_targets, termination_target, logger
     )
     optimizer.update(model, grads)
     
-    if debug:
-        # Compute individual loss components for debugging (using exact same logic as loss function)
-        output_debug, termination_prob_debug = model(input, task.SEQUENTIAL_ALGORITHM)
-        termination_prob_debug = mx.expand_dims(termination_prob_debug, axis=0)
-        
-        state, predecessor = output_debug
-        state_target, predecessor_target = graph_targets
-        
-        # Compute losses exactly as in sequential_loss_fn
-        state_loss = nn.losses.binary_cross_entropy(state, mx.expand_dims(state_target, axis=1))
-        pred_loss = nn.losses.cross_entropy(predecessor, predecessor_target, reduction='sum')  # Same as loss function
-        termination_loss = nn.losses.binary_cross_entropy(termination_prob_debug, termination_target)
-        
-        debug_info = {
-            'targets': {'state': state_target, 'predecessor': predecessor_target, 'termination': termination_target},
-            'outputs': {'state': state, 'predecessor': predecessor, 'termination': termination_prob_debug},
-            'losses': {'state': float(state_loss.item()), 'predecessor': float(pred_loss.item()), 'termination': float(termination_loss.item())}
-        }
-        return loss, output, debug_info
-    
-    return loss, output
+    return loss, (state_loss, pred_loss, termination_loss), output, termination_prob
 
 
-def print_debug_info(graph_idx, step_idx, targets, outputs, losses, total_loss):
-    """Print comprehensively formatted debugging information for model training analysis"""
-    print("=" * 80)
-    print(f"TRAINING STEP DEBUG ANALYSIS - Graph {graph_idx:02d} | Step {step_idx:02d}")
-    print("=" * 80)
+def train_sequential_model(model, dataset, num_graphs, logger):
+    """Clean training function that focuses only on training logic"""
+    logger.start_training(num_graphs)
     
-    # Print targets section
-    print("GROUND TRUTH TARGETS:")
-    print("-" * 50)
-    print(f"  State Target (Reachability):     {targets['state']}")
-    print(f"  Predecessor Target (Node IDs):   {targets['predecessor']}")
-    print(f"  Termination Target (Binary):     {targets['termination']}")
-    print()
-    
-    # Print model outputs section
-    print("MODEL PREDICTIONS:")
-    print("-" * 50)
-    print(f"  State Prediction (Logits):       {outputs['state']}")
-    print(f"  Predecessor Prediction (Logits): {outputs['predecessor']}")
-    print(f"  Termination Prediction (Prob):   {outputs['termination']}")
-    print()
-    
-    # Print losses section
-    print("LOSS COMPONENT ANALYSIS:")
-    print("-" * 50)
-    print(f"  Binary Cross-Entropy (State):    {losses['state']:.6f}")
-    print(f"  Cross-Entropy (Predecessor):     {losses['predecessor']:.6f}")
-    print(f"  Binary Cross-Entropy (Term):     {losses['termination']:.6f}")
-    print("-" * 50)
-    print(f"  COMBINED TOTAL LOSS:             {total_loss:.6f}")
-    total_check = losses['state'] + losses['predecessor'] + losses['termination']
-    print(f"  VERIFICATION (Sum of parts):     {total_check:.6f}")
-    print("=" * 80)
-    print()
-
-
-def train_sequential_model(model, dataset, num_graphs, debug=False):
-    print("INITIATING SEQUENTIAL MODEL TRAINING PROTOCOL")
-    print("=" * 80)
+    total_graphs_loss = 0.0
+    valid_graphs = 0
     
     for graph_idx in range(num_graphs):
-        print(f"PROCESSING GRAPH {graph_idx + 1} OF {num_graphs}")
-        print(f"Graph Identifier: {graph_idx}")
-        
         graph_execution_history = dataset[graph_idx]['targets']['sequential']
         connection_matrix = dataset[graph_idx]['connection_matrix']
         
         residual_features = mx.zeros([len(graph_execution_history['prim_state'][0])])
         num_steps = len(graph_execution_history['prim_state']) - 1
+
+        if num_steps == 0:
+            continue
         
-        print(f"Total training steps for this graph: {num_steps}")
-        print(f"Node count: {len(graph_execution_history['prim_state'][0])}")
-        print()
+        valid_graphs += 1
+        logger.start_graph(graph_idx, num_graphs, num_steps)
+        
+        graph_total_loss = 0.0
         
         for i in range(num_steps):
-            # Prepare targets
+            logger.start_step(i, num_steps)
+            
+            # Prepare training data
             prim_state_target = graph_execution_history['prim_state'][i + 1]
             prim_predecessor_target = graph_execution_history['prim_predecessor'][i + 1]
-            termination_target = mx.ones([1]) if i == num_steps - 1 else mx.zeros([1])
+            termination_target = graph_execution_history['prim_termination'][i + 1]
             
-            # Prepare input
-            current_features = graph_execution_history['prim_state'][i]
+            current_features = mx.argmax(graph_execution_history['prim_state'][i], axis=1)
             input_features = mx.stack([current_features, residual_features], axis=1)
             input_data = (input_features, connection_matrix)
-            
             graph_targets = (prim_state_target, prim_predecessor_target)
             
-            # Train step with optional debugging
-            if debug:
-                loss, output, debug_info = train_step(
-                    model, input_data, graph_targets, termination_target, debug=True
-                )
-                print_debug_info(
-                    graph_idx + 1, i + 1, 
-                    debug_info['targets'], debug_info['outputs'], debug_info['losses'], 
-                    float(loss)
-                )
-            else:
-                loss, output = train_step(
-                    model, input_data, graph_targets, termination_target, debug=False
-                )
-            
+            # Training step
+            (loss, (state_loss, pred_loss, termination_loss), output, termination_prob) = train_step(
+                model, input_data, graph_targets, termination_target, logger
+            )
+
             # Update residual features for next step
-            state, predecessor = output
-            residual_features = state[:, 0]
+            state, _ = output
+
+
+            if mx.softmax(termination_prob, axis=0)[1] > 0.5:
+                break
+
+            residual_features = mx.argmax(state, axis=1)
+
+            # Log losses
+            graph_total_loss += float(loss)
+            logger.log_losses(loss, state_loss, pred_loss, termination_loss)
         
-        print(f"GRAPH {graph_idx + 1} TRAINING COMPLETED SUCCESSFULLY")
-        print("=" * 80)
-        print()
+        # End of graph
+        avg_graph_loss = graph_total_loss / num_steps
+        total_graphs_loss += avg_graph_loss
+        logger.end_graph(graph_idx, avg_graph_loss, num_steps)
+    
+    # End of training
+    overall_avg_loss = total_graphs_loss / valid_graphs if valid_graphs > 0 else 0.0
+    logger.end_training(overall_avg_loss)
 
-train_sequential_model(model, train_graphs, 1, debug=True)
 
-
-
+print_logger = TqdmLogger(debug=False)  
+train_sequential_model(model, train_graphs, 700, print_logger)
 
             
 
